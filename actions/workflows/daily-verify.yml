@@ -1,0 +1,93 @@
+# Daily shadow audit — copy into .github/workflows/daily-verify.yml
+# The clock loop: an LLM agent executes the platform's verification runbook
+# (agent/03-verify-compliance.md) headlessly, re-tests every automated check,
+# recomputes the gauge, and opens tickets for regressions. This is the judgment
+# half of the platform; the deterministic half (per-PR gates) is shadow-ci.
+#
+# Requires: ANTHROPIC_API_KEY secret; the runbook + criteria corpus vendored
+# under .shadow/ (see actions/README.md). Swap the run step for another LLM
+# CLI if not using Claude.
+name: Daily Shadow Verify
+
+on:
+  schedule:
+    - cron: "17 5 * * *"   # daily, off the hour to avoid the cron stampede
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: read
+  checks: read
+  security-events: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Claude Code
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: Run the shadow audit runbook
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}   # optional
+        run: |
+          claude -p "$(cat .shadow/agent/03-verify-compliance.md)" \
+            --allowedTools "Bash(gh:*),Bash(git:*),Bash(gcloud:*),Read,Write,Glob,Grep" \
+            --max-turns 80
+
+      - name: Upload verify report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: shadow-verify-${{ github.run_id }}
+          path: shadow/verify-*.md
+          retention-days: 400
+          if-no-files-found: ignore
+
+      # ---- the gauge, rendered from GitHub too (requires .shadow/site vendored) ----
+      - name: Render the gauge (static)
+        if: always()
+        continue-on-error: true
+        env:
+          SHADOW_ORG: ${{ github.repository }}
+        run: |
+          cargo build --release --manifest-path .shadow/site/Cargo.toml
+          .shadow/site/target/release/shadow seed \
+            --criteria .shadow/criteria --procedures .shadow/procedures/PROCEDURES.md \
+            --db shadow/shadow.db
+          .shadow/site/target/release/shadow render --db shadow/shadow.db --out dist
+
+      - name: Upload gauge site
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: shadow-gauge-${{ github.run_id }}
+          path: dist/
+          retention-days: 90
+          if-no-files-found: ignore
+
+      # OPT-IN: publish the gauge to GitHub Pages. WARNING — on free-plan repos,
+      # Pages sites are PUBLIC even for private repos: your compliance posture
+      # becomes visible to anyone with the URL. Enable only on plans with private
+      # Pages, or keep consuming the artifact instead.
+      #   Enable with: gh variable set PUBLISH_GAUGE_PAGES --body true
+      - name: Publish gauge to Pages branch
+        if: vars.PUBLISH_GAUGE_PAGES == 'true'
+        run: |
+          set -euo pipefail
+          git worktree add /tmp/pages -B gh-pages || (git checkout --orphan gh-pages && git rm -rf . && git checkout - && git worktree add /tmp/pages gh-pages)
+          rm -rf /tmp/pages/* && cp -r dist/* /tmp/pages/
+          cd /tmp/pages
+          git add -A
+          git -c user.name=shadow-ci -c user.email=shadow-ci@noreply.local \
+            commit -m "gauge: $(date -u +%F)" || exit 0
+          git push -f origin gh-pages

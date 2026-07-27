@@ -1,0 +1,55 @@
+# Keyless production deploy — copy into .github/workflows/deploy.yml
+# The only path to production (CC8.1): merges land on main through the gated
+# PR flow, and this workflow — authenticated via Workload Identity Federation,
+# no exported keys anywhere — builds and ships. Humans hold no deploy credentials.
+#
+# Prereqs: provision/gcp applied once; repo variables set from its outputs:
+#   GCP_WIF_PROVIDER, GCP_DEPLOY_SA, GCP_ARTIFACT_REPO, GCP_REGION, GCP_SERVICE
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  id-token: write   # the WIF handshake — this OIDC token is the only credential
+
+concurrency:
+  group: deploy-main
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SA }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Build and push image
+        run: |
+          set -euo pipefail
+          IMAGE="${{ vars.GCP_ARTIFACT_REPO }}/${{ vars.GCP_SERVICE }}:${GITHUB_SHA::12}"
+          gcloud auth configure-docker "${{ vars.GCP_REGION }}-docker.pkg.dev" --quiet
+          docker build -t "$IMAGE" .
+          docker push "$IMAGE"
+          echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
+
+      - name: Deploy to Cloud Run
+        run: |
+          gcloud run deploy "${{ vars.GCP_SERVICE }}" \
+            --image "$IMAGE" \
+            --region "${{ vars.GCP_REGION }}" \
+            --quiet
+
+      - name: Record deploy in the run summary
+        run: |
+          echo "Deployed \`$IMAGE\` from \`${GITHUB_SHA}\` (run ${{ github.run_id }})" >> "$GITHUB_STEP_SUMMARY"

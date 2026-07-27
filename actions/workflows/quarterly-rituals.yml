@@ -1,0 +1,60 @@
+# Quarterly rituals — copy into .github/workflows/quarterly-rituals.yml
+# Fires on the first day of each quarter: auto-generates the access-review and
+# management-review evidence packets from live system state, commits them to
+# compliance-archives, and opens the tracker tickets for the human half
+# (read the diff, hold the meeting, sign by committing).
+# Turns two ~1-hour rituals into minutes of review. CC6.2/CC6.3 + CC1.2/CC4.2.
+name: Quarterly Rituals
+
+on:
+  schedule:
+    - cron: "23 6 1 1,4,7,10 *"   # 06:23 UTC, Jan/Apr/Jul/Oct 1st
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  issues: write
+  security-events: read
+
+jobs:
+  packets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: .shadow/ci
+
+      - name: Build shadow-ci
+        run: cargo build --release --manifest-path .shadow/ci/Cargo.toml
+
+      # Optional: authenticate gcloud for the GCP IAM sections.
+      # - uses: google-github-actions/auth@v2
+      #   with:
+      #     credentials_json: ${{ secrets.GCP_READONLY_SA_KEY }}
+
+      - name: Generate access-review packet
+        env:
+          GH_TOKEN: ${{ secrets.ORG_READ_TOKEN || secrets.GITHUB_TOKEN }}  # org member lists need read:org
+          GCP_PROJECTS: ""            # csv, e.g. "my-prod,my-staging"
+          ARCHIVES_PUSH: "1"
+        run: .shadow/ci/target/release/shadow-ci access-review
+
+      - name: Generate management-review packet
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SHADOW_DB: shadow/shadow.db   # if the gauge db lives elsewhere, point at it
+          ARCHIVES_PUSH: "1"
+        run: .shadow/ci/target/release/shadow-ci mgmt-packet
+
+      - name: Kick off the interviews (the shadow agent takes it from here)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # shadow-agent.yml runs the GATHER phase against the fresh packets and posts
+          # the numbered questions as interview issues; humans answer in comments.
+          gh workflow run shadow-agent.yml -f ritual=ritual-access
+          gh workflow run shadow-agent.yml -f ritual=ritual-mgmt

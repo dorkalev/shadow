@@ -1,0 +1,89 @@
+# Backup restore test, Cloud SQL variant — use this INSTEAD of the Firestore
+# restore-test.yml when running the gcp-cloudsql stack. Copy into
+# .github/workflows/restore-test.yml and adapt the env block.
+# A backup that was never restored is a hope, not a control (A1.3).
+name: Restore Test
+
+on:
+  schedule:
+    - cron: "41 4 2 */3 *"    # quarterly
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  id-token: write
+
+env:
+  # ---- ADAPT THESE ----
+  GCP_PROJECT: my-project
+  SOURCE_INSTANCE: app-db      # the instance whose backups we are proving
+  # ---------------------
+
+jobs:
+  restore-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: google-github-actions/auth@v2
+        with:
+          # needs roles/cloudsql.admin on the project (a dedicated restore SA
+          # via the same WIF pool is the clean setup)
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_RESTORE_SA || vars.GCP_DEPLOY_SA }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Restore latest backup into a throwaway clone
+        id: restore
+        run: |
+          set -euo pipefail
+          CLONE="restore-test-${{ github.run_id }}"
+          BACKUP_ID=$(gcloud sql backups list --instance "$SOURCE_INSTANCE" --project "$GCP_PROJECT" \
+                        --sort-by=~windowStartTime --limit=1 --format='value(id)')
+          test -n "$BACKUP_ID" || { echo "::error::no backups found — the backup schedule is not operating"; exit 1; }
+          echo "restoring backup $BACKUP_ID of $SOURCE_INSTANCE into $CLONE"
+          gcloud sql instances clone "$SOURCE_INSTANCE" "$CLONE" --project "$GCP_PROJECT"
+          STATE=$(gcloud sql instances describe "$CLONE" --project "$GCP_PROJECT" --format='value(state)')
+          echo "clone state: $STATE"
+          test "$STATE" = "RUNNABLE"
+          {
+            echo "# Restore test — $(date -u +%F)"
+            echo
+            echo "| Field | Value |"
+            echo "|---|---|"
+            echo "| Source instance | $SOURCE_INSTANCE |"
+            echo "| Latest backup id | $BACKUP_ID |"
+            echo "| Clone | $CLONE |"
+            echo "| Clone state | $STATE |"
+            echo "| Run | ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }} |"
+            echo
+            echo "Backup restored and instance reached RUNNABLE. Evidence for A1.3 / A1.2."
+          } > restore-test-evidence.md
+          echo "clone=$CLONE" >> "$GITHUB_OUTPUT"
+
+      - name: Tear the clone down (always)
+        if: always()
+        run: |
+          C="${{ steps.restore.outputs.clone }}"
+          [ -n "$C" ] || exit 0
+          gcloud sql instances delete "$C" --project "$GCP_PROJECT" --quiet || true
+
+      - name: Commit evidence to compliance-archives
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          Y=$(date -u +%Y); Q="Q$((($(date -u +%-m)-1)/3+1))"
+          git fetch origin compliance-archives
+          git worktree add /tmp/ca origin/compliance-archives
+          cd /tmp/ca && git checkout -B compliance-archives origin/compliance-archives
+          mkdir -p "evidence/$Y/$Q"
+          cp "$GITHUB_WORKSPACE/restore-test-evidence.md" "evidence/$Y/$Q/restore-test-$(date -u +%Y%m%d).md"
+          git add -A
+          git -c user.name=shadow-ci -c user.email=shadow-ci@noreply.local \
+            commit -m "evidence: restore test $(date -u +%F)"
+          git push origin HEAD:compliance-archives

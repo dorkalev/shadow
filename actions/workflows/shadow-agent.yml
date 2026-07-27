@@ -1,0 +1,157 @@
+# The shadow agent — copy into .github/workflows/shadow-agent.yml
+# Compliance that runs itself. One workflow, four wake-up reasons:
+#   1. issue_comment on a `shadow-interview` issue → continue that interview (parse answers / file evidence)
+#   2. incident issue closed                       → kick off the postmortem interview
+#   3. annual cron (Jan 2)                         → kick off risks / vendors / policies / tabletop interviews
+#   4. weekly cron (Mondays)                       → deterministic reminder sweep of stale interviews (no LLM)
+# Quarterly access/mgmt interviews are kicked off by quarterly-rituals.yml (which
+# generates the packets first); their conversations are continued here.
+#
+# LLM dispatcher: uses whichever key is configured — ANTHROPIC_API_KEY (Claude,
+# recommended for judgment work), GEMINI_API_KEY, or OPENAI_API_KEY (Codex).
+# The deterministic half never touches an LLM; the LLM half never approves anything;
+# humans answer by commenting on the issue with their authenticated identity.
+name: Shadow Agent
+
+on:
+  schedule:
+    - cron: "7 6 2 1 *"    # annual ritual kickoff — Jan 2
+    - cron: "7 7 * * 1"    # weekly reminder sweep — Mondays
+  issues:
+    types: [closed]
+  issue_comment:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      ritual:
+        description: "Kick off a ritual now (ritual-access|ritual-mgmt|ritual-risks|ritual-vendors|ritual-policies|ritual-tabletop)"
+        required: true
+
+concurrency:
+  group: shadow-agent-${{ github.event.issue.number || github.run_id }}
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+  checks: read
+  security-events: read
+
+jobs:
+  route:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # comment events: only shadow-interview issues, only human comments, only from people with standing
+    if: >
+      github.event_name != 'issue_comment' ||
+      (contains(github.event.issue.labels.*.name, 'shadow-interview') &&
+       github.event.comment.user.type != 'Bot' &&
+       contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association))
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Route the wake-up
+        id: route
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          MODE="" RITUAL="" ISSUE=""
+          case "${{ github.event_name }}" in
+            issue_comment)
+              MODE=continue
+              ISSUE="${{ github.event.issue.number }}"
+              ;;
+            issues)
+              # only closed incidents get a postmortem kickoff
+              if echo '${{ toJSON(github.event.issue.labels.*.name) }}' | grep -q '"incident"'; then
+                MODE=kickoff; RITUAL=postmortem; ISSUE="${{ github.event.issue.number }}"
+              else
+                MODE=skip
+              fi
+              ;;
+            workflow_dispatch)
+              MODE=kickoff; RITUAL="${{ inputs.ritual }}"
+              ;;
+            schedule)
+              if [ "$(date -u +%m-%d)" = "01-02" ]; then MODE=annual; else MODE=reminders; fi
+              ;;
+          esac
+          echo "mode=$MODE"     >> "$GITHUB_OUTPUT"
+          echo "ritual=$RITUAL" >> "$GITHUB_OUTPUT"
+          echo "issue=$ISSUE"   >> "$GITHUB_OUTPUT"
+
+      # ---- deterministic paths (no LLM) ----
+
+      - name: Weekly reminder sweep
+        if: steps.route.outputs.mode == 'reminders'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh issue list --label shadow-interview --state open \
+            --json number,title,updatedAt \
+            --jq '.[] | select((now - (.updatedAt | fromdateiso8601)) > 604800) | .number' |
+          while read -r n; do
+            gh issue comment "$n" --body "Reminder: this compliance interview has open questions (7+ days quiet). Answer the numbered questions above, or reply \`/finalize\` to file with what's answered (unanswered items are recorded as OPEN)."
+          done
+
+      - name: Build shadow-ci
+        if: contains('kickoff annual continue', steps.route.outputs.mode)
+        run: cargo build --release --manifest-path .shadow/ci/Cargo.toml
+
+      # ---- LLM dispatcher (Claude preferred; Gemini/Codex accepted) ----
+
+      - name: Install agent CLI
+        if: contains('kickoff annual continue', steps.route.outputs.mode)
+        id: llm
+        env:
+          HAS_ANTHROPIC: ${{ secrets.ANTHROPIC_API_KEY != '' }}
+          HAS_GEMINI: ${{ secrets.GEMINI_API_KEY != '' }}
+          HAS_OPENAI: ${{ secrets.OPENAI_API_KEY != '' }}
+        run: |
+          set -euo pipefail
+          if [ "$HAS_ANTHROPIC" = "true" ]; then
+            npm install -g @anthropic-ai/claude-code
+            echo 'runner=claude --allowedTools Bash(gh:*),Bash(git:*),Read,Write,Glob,Grep -p' >> "$GITHUB_OUTPUT"
+          elif [ "$HAS_GEMINI" = "true" ]; then
+            npm install -g @google/gemini-cli
+            echo 'runner=gemini -p' >> "$GITHUB_OUTPUT"
+          elif [ "$HAS_OPENAI" = "true" ]; then
+            npm install -g @openai/codex
+            echo 'runner=codex exec' >> "$GITHUB_OUTPUT"
+          else
+            echo "no LLM key configured (ANTHROPIC_API_KEY / GEMINI_API_KEY / OPENAI_API_KEY)" >&2
+            exit 1
+          fi
+
+      - name: Run interview turn
+        if: contains('kickoff continue', steps.route.outputs.mode)
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}
+          MODE: ${{ steps.route.outputs.mode }}
+          RITUAL: ${{ steps.route.outputs.ritual }}
+          ISSUE_NUMBER: ${{ steps.route.outputs.issue }}
+        run: |
+          ${{ steps.llm.outputs.runner }} "$(cat .shadow/agent/05-async-interviews.md)"
+
+      - name: Annual kickoffs
+        if: steps.route.outputs.mode == 'annual'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}
+          MODE: kickoff
+        run: |
+          set -euo pipefail
+          for r in ritual-risks ritual-vendors ritual-policies ritual-tabletop; do
+            RITUAL="$r" ${{ steps.llm.outputs.runner }} "$(cat .shadow/agent/05-async-interviews.md)"
+          done

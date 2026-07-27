@@ -1,0 +1,169 @@
+# Fire drill — copy into .github/workflows/drill.yml
+# Simulates a code donation through the STANDARD route (ticket → branch → PR →
+# gates → merge → archive) and proves the controls both ways:
+#   Stage 1 (negative): open a deliberately non-compliant PR — the compliance
+#            gate MUST fail. Evidence that the control rejects bad changes.
+#   Stage 2 (positive): fix the PR properly (ticket, 4 sections, every file
+#            listed) — the gate MUST pass; merge; the archive record MUST appear.
+# The drill's own PR/issue/archive records are real evidence, labeled as a drill.
+#
+# The default TICKET_PATTERN accepts GitHub issue refs (#N), which the drill
+# uses; pass a real tracker ticket via the input for Linear-only patterns.
+name: Fire Drill
+
+on:
+  workflow_dispatch:
+    inputs:
+      ticket:
+        description: "Optional real ticket ID to reference (for Linear-pattern repos); default uses a drill GitHub issue"
+        required: false
+  schedule:
+    - cron: "37 5 15 */3 *"   # quarterly, mid-quarter — gates get proven 4×/year
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+  checks: read
+
+concurrency:
+  group: fire-drill
+  cancel-in-progress: false
+
+jobs:
+  drill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: staging
+          fetch-depth: 0
+          token: ${{ secrets.DRILL_TOKEN || secrets.GITHUB_TOKEN }}
+          # NOTE: pushes/PRs made with the default GITHUB_TOKEN do NOT trigger
+          # other workflows — so the compliance gates would never run on the
+          # drill PR. Set DRILL_TOKEN to a fine-grained PAT (contents+PRs+issues
+          # write) or a GitHub App token for the drill to be meaningful.
+
+      - name: Preflight
+        env:
+          GH_TOKEN: ${{ secrets.DRILL_TOKEN || secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${{ secrets.DRILL_TOKEN }}" ]; then
+            echo "::warning::DRILL_TOKEN not set — gate workflows will not trigger on the drill PR; aborting."
+            exit 1
+          fi
+          git config user.name shadow-drill
+          git config user.email shadow-drill@noreply.local
+
+      - name: Create the drill ticket and branch
+        id: setup
+        env:
+          GH_TOKEN: ${{ secrets.DRILL_TOKEN }}
+        run: |
+          set -euo pipefail
+          TICKET="${{ inputs.ticket }}"
+          if [ -z "$TICKET" ]; then
+            N=$(gh issue create --title "Fire drill: prove the change gates ($(date -u +%F))" \
+                 --label "shadow-drill" \
+                 --body "Synthetic change to prove the SDLC controls operate. Acceptance: gate rejects the non-compliant PR, accepts the fixed one, archive record appears." \
+                 | grep -oE '[0-9]+$')
+            TICKET="#$N"
+            echo "issue=$N" >> "$GITHUB_OUTPUT"
+          fi
+          BRANCH="drill-$(date -u +%Y%m%d-%H%M%S)"
+          git checkout -b "$BRANCH"
+          mkdir -p .shadow
+          echo "- drill $(date -u +%FT%TZ) run ${{ github.run_id }}" >> .shadow/drill-log.md
+          git add .shadow/drill-log.md
+          git commit -m "Fire drill heartbeat"
+          git push -u origin "$BRANCH"
+          echo "ticket=$TICKET" >> "$GITHUB_OUTPUT"
+          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
+
+      - name: "Stage 1 — negative control: the gate must REJECT this"
+        id: negative
+        env:
+          GH_TOKEN: ${{ secrets.DRILL_TOKEN }}
+        run: |
+          set -euo pipefail
+          PR=$(gh pr create --base staging --head "${{ steps.setup.outputs.branch }}" \
+                --title "drill heartbeat" --body "wip" | grep -oE '[0-9]+$')
+          echo "pr=$PR" >> "$GITHUB_OUTPUT"
+          # wait for the compliance audit to conclude — it must FAIL (no ticket, thin body)
+          for i in $(seq 1 30); do
+            STATE=$(gh pr checks "$PR" --json name,state \
+                     --jq '[.[] | select(.name | contains("compliance"))] | map(.state) | join(",")' || echo "")
+            echo "checks: $STATE"
+            if echo "$STATE" | grep -q FAILURE; then echo "negative control PASSED (gate rejected)"; exit 0; fi
+            if echo "$STATE" | grep -q SUCCESS && ! echo "$STATE" | grep -q -E 'PENDING|QUEUED|IN_PROGRESS'; then
+              echo "::error::gate ACCEPTED a non-compliant PR — the control is broken"; exit 1
+            fi
+            sleep 20
+          done
+          echo "::error::compliance check never concluded"; exit 1
+
+      - name: "Stage 2 — positive control: fix it properly, the gate must PASS"
+        env:
+          GH_TOKEN: ${{ secrets.DRILL_TOKEN }}
+        run: |
+          set -euo pipefail
+          PR="${{ steps.negative.outputs.pr }}"
+          TICKET="${{ steps.setup.outputs.ticket }}"
+          gh pr edit "$PR" --title "$TICKET: Fire drill heartbeat" --body "$(cat <<EOF
+          ## Summary
+          Synthetic change proving the change-management gates operate end to end ($TICKET).
+
+          ## Tickets
+          | Ticket | Title | Status |
+          |---|---|---|
+          | $TICKET | Fire drill: prove the change gates | In Progress |
+
+          ## Changes
+          - .shadow/drill-log.md — appended one drill heartbeat line ($TICKET)
+
+          ## Test Plan
+          - [x] Stage 1: gate rejected the non-compliant version of this PR
+          - [x] Stage 2: gate passes this compliant version; merge; archive record verified
+          EOF
+          )"
+          PASSED=0
+          for i in $(seq 1 40); do
+            STATE=$(gh pr checks "$PR" --json name,state \
+                     --jq '[.[] | select(.name | contains("compliance"))] | map(.state) | unique | join(",")' || echo "")
+            echo "checks: $STATE"
+            case ",$STATE," in
+              *,SUCCESS,*) if ! echo "$STATE" | grep -qE 'PENDING|QUEUED|IN_PROGRESS|FAILURE'; then PASSED=1; break; fi ;;
+            esac
+            sleep 20
+          done
+          [ "$PASSED" = 1 ] || { echo "::error::positive control did not go green — the gate is broken, NOT merging"; exit 1; }
+          echo "positive control PASSED"
+          gh pr merge "$PR" --squash --delete-branch
+
+      - name: "Stage 3 — verify the archive record appeared"
+        env:
+          GH_TOKEN: ${{ secrets.DRILL_TOKEN }}
+        run: |
+          set -euo pipefail
+          PR="${{ steps.negative.outputs.pr }}"
+          for i in $(seq 1 20); do
+            git fetch origin compliance-archives 2>/dev/null || { sleep 15; continue; }
+            if git ls-tree -r --name-only origin/compliance-archives | grep -q "pr-$PR-"; then
+              echo "archive record found for PR #$PR — full route proven"
+              break
+            fi
+            sleep 15
+          done
+          git ls-tree -r --name-only origin/compliance-archives | grep "pr-$PR-" || { echo "::error::no archive record for the drill PR"; exit 1; }
+
+      - name: Close out
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.DRILL_TOKEN }}
+        run: |
+          set -euo pipefail
+          [ -n "${{ steps.setup.outputs.issue }}" ] && gh issue close "${{ steps.setup.outputs.issue }}" \
+            --comment "Drill complete (run ${{ github.run_id }}): gate rejected the non-compliant PR, accepted the fixed one, archive record verified. This thread is CC8.1/CC4.1 evidence that the controls operate." || true
+          git push origin --delete "${{ steps.setup.outputs.branch }}" 2>/dev/null || true

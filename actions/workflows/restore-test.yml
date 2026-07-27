@@ -1,0 +1,99 @@
+# Backup restore test — copy into .github/workflows/restore-test.yml
+# A backup that was never restored is a hope, not a control (A1.3). This
+# automates the drill for Firestore: restore the latest daily backup into a
+# throwaway database, prove it reaches ACTIVE, record the evidence, delete it.
+# (Running a SQL datastore instead? Swap the marked section for a clone-restore
+# of your instance — the shape of the drill is the same.)
+name: Restore Test
+
+on:
+  schedule:
+    - cron: "41 4 2 */3 *"    # quarterly
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  id-token: write   # required for the WIF auth handshake
+
+env:
+  # ---- ADAPT THESE ----
+  GCP_PROJECT: my-project
+  LOCATION: us-central1        # the Firestore database's location_id
+  # ---------------------
+
+jobs:
+  restore-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: google-github-actions/auth@v2
+        with:
+          # a scoped SA via WIF is ideal here too; a datastore.owner key-less
+          # federation identity needs: roles/datastore.owner on the project
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_RESTORE_SA || vars.GCP_DEPLOY_SA }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Restore latest backup into a throwaway database
+        id: restore
+        run: |
+          set -euo pipefail
+          CLONE="restore-test-${{ github.run_id }}"
+          BACKUP=$(gcloud firestore backups list --location="$LOCATION" --project="$GCP_PROJECT" \
+                     --format='value(name)' --sort-by=~snapshotTime --limit=1)
+          test -n "$BACKUP" || { echo "::error::no Firestore backups found — the backup schedule is not operating"; exit 1; }
+          echo "restoring $BACKUP into $CLONE"
+          gcloud firestore databases restore \
+            --source-backup="$BACKUP" \
+            --destination-database="$CLONE" \
+            --project="$GCP_PROJECT"
+          for i in $(seq 1 30); do
+            STATE=$(gcloud firestore databases describe --database="$CLONE" --project="$GCP_PROJECT" \
+                      --format='value(state)' 2>/dev/null || echo "PENDING")
+            echo "clone state: $STATE"
+            [ "$STATE" = "ACTIVE" ] && break
+            sleep 30
+          done
+          test "$STATE" = "ACTIVE"
+          {
+            echo "# Restore test — $(date -u +%F)"
+            echo
+            echo "| Field | Value |"
+            echo "|---|---|"
+            echo "| Source backup | $BACKUP |"
+            echo "| Restored database | $CLONE |"
+            echo "| State reached | $STATE |"
+            echo "| Run | ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }} |"
+            echo
+            echo "Latest daily backup restored to a live database. Evidence for A1.3 / A1.2."
+          } > restore-test-evidence.md
+          echo "clone=$CLONE" >> "$GITHUB_OUTPUT"
+
+      - name: Tear the clone down (always)
+        if: always()
+        run: |
+          C="${{ steps.restore.outputs.clone }}"
+          [ -n "$C" ] || exit 0
+          gcloud firestore databases update --database="$C" --project="$GCP_PROJECT" --no-delete-protection --quiet || true
+          gcloud firestore databases delete --database="$C" --project="$GCP_PROJECT" --quiet || true
+
+      - name: Commit evidence to compliance-archives
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          Y=$(date -u +%Y); Q="Q$((($(date -u +%-m)-1)/3+1))"
+          git fetch origin compliance-archives
+          git worktree add /tmp/ca origin/compliance-archives
+          cd /tmp/ca && git checkout -B compliance-archives origin/compliance-archives
+          mkdir -p "evidence/$Y/$Q"
+          cp "$GITHUB_WORKSPACE/restore-test-evidence.md" "evidence/$Y/$Q/restore-test-$(date -u +%Y%m%d).md"
+          git add -A
+          git -c user.name=shadow-ci -c user.email=shadow-ci@noreply.local \
+            commit -m "evidence: restore test $(date -u +%F)"
+          git push origin HEAD:compliance-archives

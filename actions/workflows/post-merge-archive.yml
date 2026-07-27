@@ -1,0 +1,41 @@
+# Post-merge evidence archive — copy into .github/workflows/post-merge-archive.yml
+# On every merged PR: full JSON+MD record (PR, reviews, comments, checks, compliance
+# report) with bypass detection against the live branch ruleset, committed to the
+# append-only compliance-archives branch. Bypasses trigger a Slack alert if configured.
+name: Post-Merge Archive
+
+on:
+  pull_request:
+    branches: [staging, main]
+    types: [closed]
+
+permissions:
+  contents: write
+  pull-requests: read
+  checks: read
+
+jobs:
+  archive:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          # default token can push to compliance-archives as long as no ruleset protects it
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: .shadow/ci
+
+      - name: Build shadow-ci
+        run: cargo build --release --manifest-path .shadow/ci/Cargo.toml
+
+      - name: Archive merged PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          TICKET_PATTERN: "[A-Z]{2,6}-[0-9]+"
+          ARCHIVES_BRANCH: compliance-archives
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}  # optional
+        run: .shadow/ci/target/release/shadow-ci archive

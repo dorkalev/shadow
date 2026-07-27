@@ -1,0 +1,80 @@
+# Shadow Review — copy into .github/workflows/review.yml
+# The built-in review bot for day-one installs: an LLM review
+# agent (Claude preferred; Gemini/Codex accepted — first configured key wins)
+# reviews the PR diff and posts findings as inline review threads with severity
+# prefixes. The compliance gate already blocks merges on unresolved
+# Critical/Major bot threads, and requires this reviewer's marker comment
+# (REQUIRED_REVIEWERS: "shadow-reviewer") — so unmitigated findings make the
+# PR unmergeable until fixed-and-resolved or justified-and-resolved.
+# Installing a third-party review-bot app later? Set REQUIRED_REVIEWERS to its
+# login and delete this file — the gate treats them identically.
+name: Shadow Review
+
+on:
+  pull_request:
+    branches: [staging, main]
+    types: [opened, synchronize, reopened, ready_for_review]
+
+concurrency:
+  group: shadow-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  review:
+    # Fork PRs never get secrets (prompt-injection in a fork diff must not reach an
+    # LLM holding API keys + a write token). Same-repo PRs only.
+    if: ${{ !github.event.pull_request.draft && github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - name: Install agent CLI
+        id: llm
+        env:
+          HAS_ANTHROPIC: ${{ secrets.ANTHROPIC_API_KEY != '' }}
+          HAS_GEMINI: ${{ secrets.GEMINI_API_KEY != '' }}
+          HAS_OPENAI: ${{ secrets.OPENAI_API_KEY != '' }}
+        run: |
+          set -euo pipefail
+          if [ "$HAS_ANTHROPIC" = "true" ]; then
+            npm install -g @anthropic-ai/claude-code
+            echo 'runner=claude --allowedTools Bash(gh:*),Read,Glob,Grep -p' >> "$GITHUB_OUTPUT"
+          elif [ "$HAS_GEMINI" = "true" ]; then
+            npm install -g @google/gemini-cli
+            echo 'runner=gemini -p' >> "$GITHUB_OUTPUT"
+          elif [ "$HAS_OPENAI" = "true" ]; then
+            npm install -g @openai/codex
+            echo 'runner=codex exec' >> "$GITHUB_OUTPUT"
+          else
+            echo 'runner=' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Review the PR
+        if: steps.llm.outputs.runner != ''
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          ${{ steps.llm.outputs.runner }} "$(cat .shadow/agent/06-code-review.md)"
+
+      - name: No reviewer configured (loud, not silent)
+        if: steps.llm.outputs.runner == ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          echo "::warning::no LLM key configured — this PR was NOT independently reviewed"
+          gh api "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" -f body="<!-- shadow-review -->
+          ## Shadow Review
+          ⚠️ **No LLM key configured — this PR was NOT independently reviewed.** Set ANTHROPIC_API_KEY (or GEMINI/OPENAI) as a repo secret to arm the reviewer. This notice satisfies the reviewer-presence gate so work isn't deadlocked, but it is itself evidence of the gap." >/dev/null
