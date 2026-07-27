@@ -164,6 +164,25 @@ SHADOW=.shadow/site/target/release/shadow
 mkdir -p shadow
 DB="$(pwd)/shadow/judgment.db"; rm -f "$DB"
 "$SHADOW" seed --criteria .shadow/criteria --procedures .shadow/procedures/PROCEDURES.md --db "$DB" >/dev/null
+# honor the declared scope: criteria whose category is not in scope.json are out
+if [ -f shadow/scope.json ]; then
+  CATS=$(jq -r '.categories | join(",")' shadow/scope.json 2>/dev/null || echo "")
+  if [ -n "$CATS" ]; then
+    # map category keyword → the criterion-id prefixes that belong to it
+    in_sec=$(echo "$CATS"   | grep -q security && echo 1 || echo 0)
+    in_av=$(echo "$CATS"    | grep -q availability && echo 1 || echo 0)
+    in_conf=$(echo "$CATS"  | grep -q confidentiality && echo 1 || echo 0)
+    in_pi=$(echo "$CATS"    | grep -q processing && echo 1 || echo 0)
+    in_priv=$(echo "$CATS"  | grep -q privacy && echo 1 || echo 0)
+    sqlite3 "$DB" "
+      UPDATE criteria SET in_scope=0;
+      UPDATE criteria SET in_scope=1 WHERE id LIKE 'CC%' AND $in_sec=1;
+      UPDATE criteria SET in_scope=1 WHERE id LIKE 'A1.%' AND $in_av=1;
+      UPDATE criteria SET in_scope=1 WHERE id LIKE 'C1.%' AND $in_conf=1;
+      UPDATE criteria SET in_scope=1 WHERE id LIKE 'PI1.%' AND $in_pi=1;
+      UPDATE criteria SET in_scope=1 WHERE (id LIKE 'P1.%' OR id LIKE 'P2.%' OR id LIKE 'P3.%' OR id LIKE 'P4.%' OR id LIKE 'P5.%' OR id LIKE 'P6.%' OR id LIKE 'P7.%' OR id LIKE 'P8.%') AND $in_priv=1;"
+  fi
+fi
 
 # stop only OUR previous server via its pidfile — never pkill -f (which can
     # match unrelated processes whose argv contains the port)

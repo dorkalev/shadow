@@ -58,6 +58,7 @@ if [ -n "$MISSING" ]; then
   exit 1
 fi
 gh auth status >/dev/null 2>&1 || { bad "gh not authenticated — run: gh auth login (choose HTTPS + browser so the token gets 'workflow' scope)"; exit 1; }
+gh auth setup-git >/dev/null 2>&1 || true  # ensure git can auth to github non-interactively (HTTPS or SSH)
 # the token MUST carry 'workflow' scope or pushing .github/workflows/*.yml is rejected
 if ! gh auth status 2>&1 | grep -q "'workflow'"; then
   warn "your gh token may lack the 'workflow' scope — pushing workflow files can be rejected"
