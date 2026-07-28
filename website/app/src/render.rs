@@ -770,7 +770,7 @@ footer a{color:var(--faint)}
 .hd-right a{color:var(--faint)}
 .micro-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(64px,1fr));gap:6px;margin-top:20px}
 form.mrun{display:contents}
-.mbox{display:flex;flex-direction:column;gap:3px;align-items:center;font-family:"IBM Plex Mono",monospace;font-size:9.5px;letter-spacing:.03em;padding:9px 2px 7px;border:1px solid var(--rule);border-left:3px solid var(--rule);background:rgba(33,28,20,.015);color:var(--ink);text-align:center;cursor:pointer}
+.mbox{display:flex;flex-direction:column;gap:3px;align-items:center;font-family:"IBM Plex Mono",monospace;font-size:9.5px;letter-spacing:.03em;padding:9px 2px 7px;border:1px solid var(--rule);border-left:3px solid var(--rule);background:rgba(33,28,20,.015);color:var(--ink);text-align:center;cursor:pointer;text-decoration:none}
 span.mbox{cursor:default}
 .mbox .mg{font-size:12px;line-height:1}
 .mbox.ok{border-left-color:var(--green);background:rgba(44,110,73,.10)}
@@ -941,27 +941,29 @@ pub fn micro(m: &Model, running: &std::collections::HashSet<String>, runner_ok: 
         let (g, _) = crit_glyph(if c.in_scope { &c.status } else { "not_started" });
         let glyph = if is_running { "⟳" } else { g };
         let tip = format!(
-            "{} — {} [{}] · click runs its automated checks",
+            "{} — {} [{}] · click for the check log & evidence",
             c.id,
             label_for(&c.id),
             if c.in_scope { c.status.replace('_', " ") } else { "out of scope".into() }
         );
-        if c.in_scope && runner_ok && !is_running {
+        // every box links to its evidence detail page (the check log). While a
+        // verification is actively running, show the pulsing state instead.
+        if is_running {
             let _ = write!(
                 s,
-                r#"<form class="mrun" method="post" action="/run/{id}"><button class="mbox {cls}" title="{tip}"><span>{id}</span><span class="mg">{glyph}</span></button></form>"#,
-                id = esc(&c.id),
-                tip = esc(&tip),
+                r#"<span class="mbox {cls}" title="{}"><span>{}</span><span class="mg">{glyph}</span></span>"#,
+                esc(&tip), esc(&c.id),
             );
         } else {
             let _ = write!(
                 s,
-                r#"<span class="mbox {cls}" title="{}"><span>{}</span><span class="mg">{glyph}</span></span>"#,
-                esc(&tip),
-                esc(&c.id),
+                r#"<a class="mbox {cls}" href="/criteria/{id}" title="{tip}"><span>{id}</span><span class="mg">{glyph}</span></a>"#,
+                id = esc(&c.id),
+                tip = esc(&tip),
             );
         }
     }
+    let _ = runner_ok;
     s.push_str("</div>");
     let _ = write!(
         s,
