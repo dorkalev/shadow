@@ -247,9 +247,17 @@ fn seed(db_path: &str, criteria_dir: &str, procedures_md: &str) {
     let _ = conn.execute("ALTER TABLE criteria ADD COLUMN automatable TEXT NOT NULL DEFAULT 'partial'", []);
     let _ = conn.execute("ALTER TABLE criteria ADD COLUMN nature TEXT NOT NULL DEFAULT 'technical'", []);
 
+    let criteria_root = std::fs::canonicalize(criteria_dir).expect("criteria dir");
+    if !criteria_root.is_dir() {
+        panic!("criteria path is not a directory");
+    }
     let mut n = 0;
-    for entry in std::fs::read_dir(criteria_dir).expect("criteria dir") {
-        let path = entry.expect("entry").path();
+    for entry in std::fs::read_dir(&criteria_root).expect("criteria dir") {
+        let path = entry.expect("entry").path().canonicalize().expect("canonical criterion");
+        // Never follow a symlink or traversal outside the configured corpus.
+        if !path.starts_with(&criteria_root) {
+            continue;
+        }
         if path.extension().and_then(|e| e.to_str()) != Some("md") {
             continue;
         }

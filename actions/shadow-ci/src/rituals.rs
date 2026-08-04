@@ -193,10 +193,14 @@ pub fn run_mgmt_packet() -> Result<i32, String> {
     );
 
     md.push_str(&section_or_err("Gauge trend (last 13 readings)", || {
-        if !std::path::Path::new(&db).exists() {
-            return Err(format!("{db} not found"));
+        // SHADOW_DB is configuration, but do not let an arbitrary unresolved
+        // path reach a subprocess. Canonicalization also rejects missing paths.
+        let db_path = std::fs::canonicalize(&db).map_err(|_| format!("{db} not found"))?;
+        if !db_path.is_file() || db_path.extension().and_then(|v| v.to_str()) != Some("db") {
+            return Err("SHADOW_DB must resolve to a .db file".into());
         }
-        let out = run("sqlite3", &[&db, "SELECT ts, printf('%.1f', gauge), COALESCE(cap_reason,'') FROM gauge_history ORDER BY ts DESC LIMIT 13"])?;
+        let db_path = db_path.to_str().ok_or("SHADOW_DB is not valid UTF-8")?;
+        let out = run("sqlite3", &[db_path, "SELECT ts, printf('%.1f', gauge), COALESCE(cap_reason,'') FROM gauge_history ORDER BY ts DESC LIMIT 13"])?;
         let mut t = String::from("| Reading | Gauge | Cap reason |\n|---|---|---|\n");
         for line in out.lines() {
             let cells: Vec<&str> = line.split('|').collect();
