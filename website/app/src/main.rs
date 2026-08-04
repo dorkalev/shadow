@@ -124,7 +124,10 @@ fn criteria_for_verify_check(check: &str) -> &'static [&'static str] {
 fn criterion_status(verdict: &str) -> (&'static str, f64, u8) {
     match verdict {
         "pass" => ("verified", 1.0, 1),
-        "unknown" => ("in_progress", 0.25, 2),
+        // A permission/API blind spot is evidence of no verified control, not
+        // partial implementation. Keep it visibly unknown in `checks` but do
+        // not let it move the SOC 2 gauge.
+        "unknown" => ("not_started", 0.0, 2),
         _ => ("failing", 0.0, 3),
     }
 }
@@ -779,7 +782,7 @@ mod tests {
     #[test]
     fn verifier_verdicts_never_turn_unknown_into_verified() {
         assert_eq!(criterion_status("pass"), ("verified", 1.0, 1));
-        assert_eq!(criterion_status("unknown"), ("in_progress", 0.25, 2));
+        assert_eq!(criterion_status("unknown"), ("not_started", 0.0, 2));
         assert_eq!(criterion_status("fail"), ("failing", 0.0, 3));
     }
 }
