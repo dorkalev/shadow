@@ -1,0 +1,62 @@
+# This repository's own, model-free SOC 2 dashboard snapshot.
+name: Shadow Dashboard Snapshot
+
+on:
+  schedule:
+    - cron: "17 5 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  security-events: read
+
+jobs:
+  verify-and-render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            actions/shadow-ci
+            website/app
+
+      - name: Build deterministic verifier and dashboard
+        run: |
+          cargo build --release --manifest-path actions/shadow-ci/Cargo.toml
+          cargo build --release --manifest-path website/app/Cargo.toml
+
+      - name: Verify live GitHub controls
+        id: verify
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.ORG_READ_TOKEN || secrets.GITHUB_TOKEN }}
+          SHADOW_BRANCHES: "main"
+        run: actions/shadow-ci/target/release/shadow-ci verify
+
+      - name: Render dashboard snapshot
+        if: always()
+        env:
+          SHADOW_ORG: dorkalev/shadow
+        run: |
+          website/app/target/release/shadow seed \
+            --criteria criteria \
+            --procedures procedures/PROCEDURES.md \
+            --db shadow/shadow.db
+          website/app/target/release/shadow import-verify \
+            --db shadow/shadow.db \
+            --report shadow/verify-$(date -u +%F).json
+          website/app/target/release/shadow render --db shadow/shadow.db --out dist
+
+      - name: Upload dashboard and verification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: shadow-dashboard-${{ github.run_id }}
+          path: |
+            dist/
+            shadow/verify-*.json
+          retention-days: 400
+          if-no-files-found: error

@@ -20,7 +20,9 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: .shadow/ci
+          workspaces: |
+            .shadow/ci
+            .shadow/site
 
       - name: Build shadow-ci
         run: cargo build --release --manifest-path .shadow/ci/Cargo.toml
@@ -31,11 +33,35 @@ jobs:
           SHADOW_BRANCHES: "main,staging"
         run: .shadow/ci/target/release/shadow-ci verify
 
+      - name: Build static dashboard snapshot
+        if: always()
+        env:
+          SHADOW_ORG: ${{ github.repository }}
+        run: |
+          cargo build --release --manifest-path .shadow/site/Cargo.toml
+          .shadow/site/target/release/shadow seed \
+            --criteria .shadow/criteria \
+            --procedures .shadow/procedures/PROCEDURES.md \
+            --db shadow/shadow.db
+          .shadow/site/target/release/shadow import-verify \
+            --db shadow/shadow.db \
+            --report shadow/verify-$(date -u +%F).json
+          .shadow/site/target/release/shadow render --db shadow/shadow.db --out dist
+
       - name: Upload verification evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: deterministic-shadow-verify-${{ github.run_id }}
           path: shadow/verify-*.json
+          retention-days: 400
+          if-no-files-found: error
+
+      - name: Upload dashboard snapshot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: shadow-dashboard-${{ github.run_id }}
+          path: dist/
           retention-days: 400
           if-no-files-found: error
