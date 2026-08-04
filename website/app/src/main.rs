@@ -121,14 +121,15 @@ fn criteria_for_verify_check(check: &str) -> &'static [&'static str] {
     }
 }
 
-fn criterion_status(verdict: &str) -> (&'static str, f64, u8) {
+fn criterion_status(verdict: &str) -> Option<(&'static str, f64, u8)> {
     match verdict {
-        "pass" => ("verified", 1.0, 1),
+        "pass" => Some(("verified", 1.0, 1)),
         // A permission/API blind spot is evidence of no verified control, not
         // partial implementation. Keep it visibly unknown in `checks` but do
         // not let it move the SOC 2 gauge.
-        "unknown" => ("not_started", 0.0, 2),
-        _ => ("failing", 0.0, 3),
+        "unknown" => Some(("not_started", 0.0, 2)),
+        "n/a" => None,
+        _ => Some(("failing", 0.0, 3)),
     }
 }
 
@@ -163,10 +164,12 @@ fn import_verify(db_path: &str, report_path: &str) {
                 params![criterion, &check.id, &check.verdict, &check.evidence, &ts],
             )
             .expect("upsert check");
-            match worst.get(criterion) {
-                Some((_, _, rank)) if *rank >= status.2 => {}
-                _ => {
-                    worst.insert(criterion, status);
+            if let Some(status) = status {
+                match worst.get(criterion) {
+                    Some((_, _, rank)) if *rank >= status.2 => {}
+                    _ => {
+                        worst.insert(criterion, status);
+                    }
                 }
             }
         }
@@ -781,8 +784,9 @@ mod tests {
 
     #[test]
     fn verifier_verdicts_never_turn_unknown_into_verified() {
-        assert_eq!(criterion_status("pass"), ("verified", 1.0, 1));
-        assert_eq!(criterion_status("unknown"), ("not_started", 0.0, 2));
-        assert_eq!(criterion_status("fail"), ("failing", 0.0, 3));
+        assert_eq!(criterion_status("pass"), Some(("verified", 1.0, 1)));
+        assert_eq!(criterion_status("unknown"), Some(("not_started", 0.0, 2)));
+        assert_eq!(criterion_status("fail"), Some(("failing", 0.0, 3)));
+        assert_eq!(criterion_status("n/a"), None);
     }
 }
