@@ -35,7 +35,7 @@ Install the platform's native tooling (the full contract and file list live in [
 2. `.github/workflows/ci.yml` — build + test on PR. If the repo has no tests at all, create the harness and one real test; flag test debt in the report rather than faking coverage.
 3. `compliance.yml` runs `shadow-ci check` in two phases (`audit` at awaiting-review, `review-gate` at post-review). Tune its env block: `TICKET_PATTERN` from Step 0, reviewers, `TEST_EXCLUDE_PATHS`, `CONFIDENCE_THRESHOLD` (default 70). Secret `LINEAR_API_KEY` only if Linear ticket verification is wanted — the gates are deterministic and need no LLM key.
 4. `post-merge-archive.yml` runs `shadow-ci archive` on merge: JSON+MD record to the auto-created `compliance-archives` branch, **bypass detection** against the live branch ruleset, Slack alert via `SLACK_WEBHOOK_URL` if set.
-5. `daily-verify.yml` runs the clock loop headlessly (Claude on `.shadow/agent/03-verify-compliance.md`); needs `ANTHROPIC_API_KEY`.
+5. `deterministic-verify.yml` runs the daily clock loop without an LLM. `daily-verify.yml` is a manual, explicitly approved deep review; use it only for judgment work and set a spend budget first.
 6. Register the compliance contexts (`compliance-audit`, `compliance-review-gate`) as **required status checks** in the Step 2 rulesets (do this after first successful runs so the context names are exact).
 7. PR template (`.github/pull_request_template.md`) with the four required sections: Summary / Tickets table / Changes / Test Plan.
 

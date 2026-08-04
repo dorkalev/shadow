@@ -79,7 +79,7 @@ Criterion IDs and texts come verbatim from **AICPA TSP Section 100** — verifie
 1. Read [PLAN.md](PLAN.md).
 2. In the target project, run an agent on [agent/01-scan-platform.md](agent/01-scan-platform.md) → review `shadow/scan-report.md`.
 3. Approve and run [agent/02-setup-github-sdlc.md](agent/02-setup-github-sdlc.md).
-4. Run [agent/03-verify-compliance.md](agent/03-verify-compliance.md) → your baseline gauge. Schedule it daily.
+4. Run [agent/03-verify-compliance.md](agent/03-verify-compliance.md) → your baseline gauge. Schedule the deterministic verifier daily; run the LLM deep review only when explicitly approved.
 5. Develop through [agent/04-proactive-sdlc.md](agent/04-proactive-sdlc.md). Watch the gauge climb.
 
 ## Positioning & disclaimer

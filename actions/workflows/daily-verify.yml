@@ -1,5 +1,7 @@
-# Daily shadow audit — copy into .github/workflows/daily-verify.yml
-# The clock loop: an LLM agent executes the platform's verification runbook
+# Deep shadow audit — copy into .github/workflows/daily-verify.yml
+# This is an explicitly-authorized LLM review, not a daily control. The clock
+# loop belongs in deterministic code; until that exists, a human must opt in
+# for each run and accepts the associated model cost.
 # (agent/03-verify-compliance.md) headlessly, re-tests every automated check,
 # recomputes the gauge, and opens tickets for regressions. This is the judgment
 # half of the platform; the deterministic half (per-PR gates) is shadow-ci.
@@ -7,12 +9,16 @@
 # Requires: ANTHROPIC_API_KEY secret; the runbook + criteria corpus vendored
 # under .shadow/ (see actions/README.md). Swap the run step for another LLM
 # CLI if not using Claude.
-name: Daily Shadow Verify
+name: Deep Shadow Review
 
 on:
-  schedule:
-    - cron: "17 5 * * *"   # daily, off the hour to avoid the cron stampede
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      run_llm:
+        description: "I approve a budgeted LLM deep review for this run"
+        required: true
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -23,8 +29,9 @@ permissions:
 
 jobs:
   verify:
+    if: inputs.run_llm == true
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
@@ -41,7 +48,7 @@ jobs:
         run: |
           claude -p "$(cat .shadow/agent/03-verify-compliance.md)" \
             --allowedTools "Bash(gh:*),Bash(git:*),Bash(gcloud:*),Read,Write,Glob,Grep" \
-            --max-turns 80
+            --max-turns 12
 
       - name: Upload verify report
         if: always()

@@ -1,0 +1,41 @@
+# Daily drift detector — no LLM and no model key.
+# Copy into .github/workflows/deterministic-verify.yml in an adopting repo.
+name: Deterministic Shadow Verify
+
+on:
+  schedule:
+    - cron: "17 5 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  security-events: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: .shadow/ci
+
+      - name: Build shadow-ci
+        run: cargo build --release --manifest-path .shadow/ci/Cargo.toml
+
+      - name: Verify live GitHub controls
+        env:
+          GH_TOKEN: ${{ secrets.ORG_READ_TOKEN || secrets.GITHUB_TOKEN }}
+          SHADOW_BRANCHES: "main,staging"
+        run: .shadow/ci/target/release/shadow-ci verify
+
+      - name: Upload verification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deterministic-shadow-verify-${{ github.run_id }}
+          path: shadow/verify-*.json
+          retention-days: 400
+          if-no-files-found: error
