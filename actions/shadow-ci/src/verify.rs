@@ -12,6 +12,7 @@ enum Verdict {
     Pass,
     Fail,
     Unknown,
+    NotApplicable,
 }
 
 impl Verdict {
@@ -20,6 +21,7 @@ impl Verdict {
             Self::Pass => "pass",
             Self::Fail => "fail",
             Self::Unknown => "unknown",
+            Self::NotApplicable => "n/a",
         }
     }
 }
@@ -61,9 +63,26 @@ pub fn run_verify() -> Result<i32, String> {
     let (owner, _) = repo.split_once('/').ok_or("REPO must be owner/name")?;
     let branches = std::env::var("SHADOW_BRANCHES").unwrap_or_else(|_| "main".into());
 
-    let org = gh_json(&["api", &format!("orgs/{owner}")]);
-    let two_factor = org.map(|v| v["two_factor_requirement_enabled"].as_bool().unwrap_or(false));
-    let mut checks = vec![bool_control("github.org_2fa_required", two_factor)];
+    let owner_type = gh_json(&["api", &format!("repos/{repo}")])
+        .ok()
+        .and_then(|v| v["owner"]["type"].as_str().map(str::to_owned));
+    let mfa = match owner_type.as_deref() {
+        Some("Organization") => {
+            let org = gh_json(&["api", &format!("orgs/{owner}")]);
+            bool_control("github.org_2fa_required", org.map(|v| v["two_factor_requirement_enabled"].as_bool().unwrap_or(false)))
+        }
+        Some("User") => result(
+            "github.org_2fa_required",
+            Verdict::NotApplicable,
+            "repository is user-owned; organization-wide MFA is not applicable".into(),
+        ),
+        _ => result(
+            "github.org_2fa_required",
+            Verdict::Unknown,
+            "could not determine repository owner type".into(),
+        ),
+    };
+    let mut checks = vec![mfa];
 
     for branch in branches.split(',').map(str::trim).filter(|b| !b.is_empty()) {
         checks.push(protected_branch(
@@ -110,5 +129,10 @@ mod tests {
         assert_eq!(array_control("x", Ok(json!([])))["verdict"], "pass");
         assert_eq!(array_control("x", Ok(json!([{}])))["verdict"], "fail");
         assert_eq!(protected_branch("x", Err("HTTP 404".into()))["verdict"], "fail");
+    }
+
+    #[test]
+    fn not_applicable_controls_are_distinct_from_unknown() {
+        assert_eq!(result("x", Verdict::NotApplicable, "user-owned".into())["verdict"], "n/a");
     }
 }
