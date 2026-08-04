@@ -134,6 +134,7 @@ fn import_verify(db_path: &str, report_path: &str) {
         &std::fs::read_to_string(report_path).expect("read deterministic verify report"),
     )
     .expect("parse deterministic verify report");
+    let check_count = report.checks.len();
     let conn = Connection::open(db_path).expect("open db");
     conn.execute_batch(SCHEMA).expect("schema");
     let ts = std::process::Command::new("date")
@@ -187,7 +188,7 @@ fn import_verify(db_path: &str, report_path: &str) {
         params![ts, gauge, cap, cap_reason],
     )
     .expect("record gauge");
-    println!("imported {} deterministic checks; gauge {:.1}%", report.checks.len(), gauge);
+    println!("imported {check_count} deterministic checks; gauge {gauge:.1}%");
 }
 
 // ---------- seeding: the markdown corpus is the source of truth ----------
@@ -772,7 +773,7 @@ mod tests {
     fn deterministic_checks_map_only_to_owned_criteria() {
         assert_eq!(criteria_for_verify_check("github.org_2fa_required"), ["CC6.1", "CC6.2"]);
         assert_eq!(criteria_for_verify_check("github.branch_protection.main"), ["CC8.1"]);
-        assert_eq!(criteria_for_verify_check("unknown"), []);
+        assert!(criteria_for_verify_check("unknown").is_empty());
     }
 
     #[test]
