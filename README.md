@@ -18,6 +18,7 @@ The corpus is the product: any capable LLM agent (Claude Code first) executes it
 | Path | What it is |
 |---|---|
 | [PLAN.md](PLAN.md) | The grand plan — vision, architecture, scoring model, phases. Start here. |
+| [COVERAGE.md](COVERAGE.md) | Measured Rust coverage baseline, enforced ratchet, and the path to 100%. |
 | [CHECKLIST.md](CHECKLIST.md) | The auditor's checklist: all **61 criteria** of AICPA TSP Section 100 (2017 TSC, 2022 revised points of focus), verbatim, as checkboxes. |
 | [criteria/](criteria/) | One in-depth file per criterion (CC1.1 … P8.1): verbatim text, meaning, points of focus, what the auditor asks for, tiny-startup controls, automated shadow checks, evidence artifacts. |
 | [docs/what-is-soc2.md](docs/what-is-soc2.md) | SOC 2 meaning: attestation vs certification, Type I/II, report anatomy, description criteria, auditor lingo. |

@@ -34,12 +34,12 @@ jobs:
         run: |
           mkdir -p coverage
           cargo llvm-cov --manifest-path actions/shadow-ci/Cargo.toml --locked \
-            --json --output-path coverage/shadow-ci.json
+            --fail-under-lines 20 --json --output-path coverage/shadow-ci.json
 
       - name: Measure gauge application coverage
         run: |
           cargo llvm-cov --manifest-path website/app/Cargo.toml --locked \
-            --json --output-path coverage/website.json
+            --fail-under-lines 7 --json --output-path coverage/website.json
 
       - name: Upload coverage reports
         if: always()
