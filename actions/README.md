@@ -79,7 +79,7 @@ Start vendored (works before this platform is even on GitHub); graduate to centr
 | `test.yml` | PRs and pushes to `main`/`staging` | Rust unit tests plus machine-readable coverage measurements for the control binary and gauge app |
 | `post-merge-archive.yml` | PR closed & merged | `shadow-ci archive` → compliance-archives + Slack |
 | `daily-verify.yml` | manual only | Explicitly authorized, 12-turn Claude deep review on `agent/03-verify-compliance.md` |
-| `deterministic-verify.yml` | cron daily + manual | `shadow-ci verify` — live GitHub MFA, protected branches, and open security findings; no LLM or model key |
+| `deterministic-verify.yml` | cron daily + manual | `shadow-ci verify` plus a static dashboard artifact — live GitHub MFA, protected branches, and open security findings; no LLM or model key |
 | `quarterly-rituals.yml` | cron, 1st of each quarter | `shadow-ci access-review` + `mgmt-packet` → evidence packets to archives, then dispatches the interview kickoffs to shadow-agent |
 | `restore-test.yml` | cron, quarterly (template) | Firestore: restore latest daily backup into a throwaway database, prove ACTIVE, evidence to archives, delete it (A1.3) |
 | `deploy.yml` | push to main | Keyless WIF deploy to Cloud Run — the only path to production (needs `provision/gcp` applied once) |

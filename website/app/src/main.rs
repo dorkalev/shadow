@@ -13,6 +13,7 @@ use axum::{
 };
 use rusqlite::{params, Connection};
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 const SCHEMA: &str = "
@@ -83,13 +84,110 @@ fn main() {
             let out = arg(&args, "--out", "dist");
             render_static(&db_path, &out);
         }
+        Some("import-verify") => {
+            let report = arg(&args, "--report", "shadow/verify.json");
+            import_verify(&db_path, &report);
+        }
         _ => {
             eprintln!("usage: shadow seed --criteria DIR --procedures FILE [--db PATH]");
             eprintln!("       shadow serve  [--db PATH] [--port 8300]");
             eprintln!("       shadow render [--db PATH] [--out dist]   # static export (index + criteria pages)");
+            eprintln!("       shadow import-verify --db PATH --report verify.json");
             std::process::exit(2);
         }
     }
+}
+
+// ---------- deterministic verifier import ----------
+
+#[derive(Deserialize)]
+struct VerifyReport {
+    checks: Vec<VerifyCheck>,
+}
+
+#[derive(Deserialize)]
+struct VerifyCheck {
+    id: String,
+    verdict: String,
+    evidence: String,
+}
+
+fn criteria_for_verify_check(check: &str) -> &'static [&'static str] {
+    match check {
+        "github.org_2fa_required" => &["CC6.1", "CC6.2"],
+        id if id.starts_with("github.branch_protection.") => &["CC8.1"],
+        "github.open_dependabot_alerts" | "github.open_code_scanning_alerts" | "github.open_secret_scanning_alerts" => &["CC7.1"],
+        _ => &[],
+    }
+}
+
+fn criterion_status(verdict: &str) -> (&'static str, f64, u8) {
+    match verdict {
+        "pass" => ("verified", 1.0, 1),
+        "unknown" => ("in_progress", 0.25, 2),
+        _ => ("failing", 0.0, 3),
+    }
+}
+
+fn import_verify(db_path: &str, report_path: &str) {
+    let report: VerifyReport = serde_json::from_str(
+        &std::fs::read_to_string(report_path).expect("read deterministic verify report"),
+    )
+    .expect("parse deterministic verify report");
+    let conn = Connection::open(db_path).expect("open db");
+    conn.execute_batch(SCHEMA).expect("schema");
+    let ts = std::process::Command::new("date")
+        .args(["-u", "+%Y-%m-%dT%H:%M:%SZ"])
+        .output()
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_else(|| "unknown".into());
+    let mut worst: HashMap<&str, (&str, f64, u8)> = HashMap::new();
+    let mut cap_reason = None;
+
+    for check in report.checks {
+        let status = criterion_status(&check.verdict);
+        if (check.id == "github.org_2fa_required" || check.id.starts_with("github.branch_protection."))
+            && check.verdict == "fail"
+        {
+            cap_reason = Some(check.id.clone());
+        }
+        for &criterion in criteria_for_verify_check(&check.id) {
+            conn.execute(
+                "INSERT INTO checks (criterion_id, name, verdict, evidence, last_run) VALUES (?1,?2,?3,?4,?5)
+                 ON CONFLICT(criterion_id, name) DO UPDATE SET verdict=?3, evidence=?4, last_run=?5",
+                params![criterion, &check.id, &check.verdict, &check.evidence, &ts],
+            )
+            .expect("upsert check");
+            match worst.get(criterion) {
+                Some((_, _, rank)) if *rank >= status.2 => {}
+                _ => {
+                    worst.insert(criterion, status);
+                }
+            }
+        }
+    }
+    for (criterion, (status, credit, _)) in worst {
+        conn.execute(
+            "UPDATE criteria SET status=?2, credit=?3, updated_at=?4 WHERE id=?1",
+            params![criterion, status, credit, ts],
+        )
+        .expect("update criterion");
+    }
+    let gauge: f64 = conn
+        .query_row(
+            "SELECT COALESCE(SUM(weight * credit) * 100.0 / NULLIF(SUM(weight), 0), 0) FROM criteria WHERE in_scope=1",
+            [],
+            |r| r.get(0),
+        )
+        .expect("compute gauge");
+    let cap = cap_reason.as_ref().map(|_| 79.0);
+    conn.execute(
+        "INSERT OR REPLACE INTO gauge_history (ts, gauge, cap, cap_reason) VALUES (?1,?2,?3,?4)",
+        params![ts, gauge, cap, cap_reason],
+    )
+    .expect("record gauge");
+    println!("imported {} deterministic checks; gauge {:.1}%", report.checks.len(), gauge);
 }
 
 // ---------- seeding: the markdown corpus is the source of truth ----------
@@ -664,4 +762,23 @@ fn render_static(db_path: &str, out: &str) {
         std::fs::write(format!("{out}/criteria/{}.html", c.id), page).expect("write detail");
     }
     println!("rendered {out}/index.html + {} criteria pages", model.criteria.len());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deterministic_checks_map_only_to_owned_criteria() {
+        assert_eq!(criteria_for_verify_check("github.org_2fa_required"), ["CC6.1", "CC6.2"]);
+        assert_eq!(criteria_for_verify_check("github.branch_protection.main"), ["CC8.1"]);
+        assert_eq!(criteria_for_verify_check("unknown"), []);
+    }
+
+    #[test]
+    fn verifier_verdicts_never_turn_unknown_into_verified() {
+        assert_eq!(criterion_status("pass"), ("verified", 1.0, 1));
+        assert_eq!(criterion_status("unknown"), ("in_progress", 0.25, 2));
+        assert_eq!(criterion_status("fail"), ("failing", 0.0, 3));
+    }
 }
