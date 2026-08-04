@@ -1,0 +1,54 @@
+# Test and coverage measurement for the Shadow platform itself.
+# Coverage is recorded before a threshold is enforced: a failing quality gate
+# must reflect tested behavior, not a made-up percentage.
+name: Test and Coverage
+
+on:
+  pull_request:
+  push:
+    branches: [main, staging]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            actions/shadow-ci
+            website/app
+
+      - name: Test deterministic control binary
+        run: cargo test --manifest-path actions/shadow-ci/Cargo.toml --locked
+
+      - name: Test gauge application
+        run: cargo test --manifest-path website/app/Cargo.toml --locked
+
+      - name: Install coverage tool
+        uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Measure control binary coverage
+        run: |
+          mkdir -p coverage
+          cargo llvm-cov --manifest-path actions/shadow-ci/Cargo.toml --locked \
+            --fail-under-lines 20 --json --output-path coverage/shadow-ci.json
+
+      - name: Measure gauge application coverage
+        run: |
+          cargo llvm-cov --manifest-path website/app/Cargo.toml --locked \
+            --fail-under-lines 7 --json --output-path coverage/website.json
+
+      - name: Upload coverage reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rust-coverage-${{ github.run_id }}
+          path: coverage/*.json
+          retention-days: 90
+          if-no-files-found: error

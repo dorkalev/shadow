@@ -65,7 +65,7 @@ if ! gh auth status 2>&1 | grep -q "'workflow'"; then
   info "if the install push fails, run: gh auth refresh -s workflow  and re-run"
 fi
 command -v claude >/dev/null && claude --version >/dev/null 2>&1 || warn "claude is installed but 'claude --version' failed — ensure it is logged in (the criteria half needs it)"
-[ -n "${ANTHROPIC_API_KEY:-}" ] || warn "ANTHROPIC_API_KEY not exported — daily-verify/shadow-agent won't run until set; the demo still works (reviewer falls back to a presence marker)"
+[ -n "${ANTHROPIC_API_KEY:-}" ] || warn "ANTHROPIC_API_KEY not exported — optional deep reviews and rituals remain disabled (the deterministic controls still run)"
 case "$VIS" in
   --private) warn "PRIVATE repo: secret scanning & branch rulesets need a paid plan / GH Advanced Security — they'll warn-and-skip. Use --public for a fully-green demo on a free account." ;;
 esac
@@ -101,12 +101,13 @@ cp "$PLATFORM/testimony.sh" ./testimony.sh && chmod +x testimony.sh
 cp "$PLATFORM/atonement.sh" ./atonement.sh && chmod +x atonement.sh
 mkdir -p .shadow/provision && cp "$PLATFORM/provision/guided.mjs" .shadow/provision/guided.mjs
 # the Clock — the long-term machinery, not just the birth certificate:
-cp "$PLATFORM/actions/workflows/daily-verify.yml"      .github/workflows/   # drift detector (24h)
+cp "$PLATFORM/actions/workflows/deterministic-verify.yml" .github/workflows/ # drift detector (24h, no LLM)
+cp "$PLATFORM/actions/workflows/daily-verify.yml"      .github/workflows/   # manual, budgeted deep review
 cp "$PLATFORM/actions/workflows/quarterly-rituals.yml" .github/workflows/   # evidence packets + interviews
 cp "$PLATFORM/actions/workflows/shadow-agent.yml"      .github/workflows/   # async interviews + reminders
 cp "$PLATFORM/actions/workflows/drill.yml"             .github/workflows/   # quarterly gate self-test
 cp "$PLATFORM/actions/workflows/compliance.yml" .github/workflows/   # requires shadow-reviewer by default
-cp "$PLATFORM/actions/workflows/review.yml"     .github/workflows/   # the built-in reviewer (LLM key from secrets)
+cp "$PLATFORM/actions/workflows/review.yml"     .github/workflows/   # opt-in built-in reviewer
 cp "$PLATFORM/actions/workflows/post-merge-archive.yml" .github/workflows/
 cat > .github/pull_request_template.md <<'EOF'
 ## Summary
@@ -161,10 +162,11 @@ gh api -X PUT "repos/$OWNER/$NAME/private-vulnerability-reporting" >/dev/null 2>
 
 step "wiring secrets for the Clock"
 if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
-  gh secret set ANTHROPIC_API_KEY --body "$ANTHROPIC_API_KEY" && ok "ANTHROPIC_API_KEY set — daily verify + shadow agent are armed"
+  gh secret set ANTHROPIC_API_KEY --body "$ANTHROPIC_API_KEY" && ok "ANTHROPIC_API_KEY stored — LLM work remains off until explicitly enabled"
 else
-  warn "ANTHROPIC_API_KEY not in env — daily-verify and shadow-agent will fail until: gh secret set ANTHROPIC_API_KEY"
+  warn "ANTHROPIC_API_KEY not in env — optional LLM deep reviews and rituals are disabled"
 fi
+warn "LLM automation is intentionally off. Enable SHADOW_LLM_REVIEW=true or SHADOW_LLM_RITUALS=true only after setting a budget."
 warn "drill.yml needs a fine-grained PAT: gh secret set DRILL_TOKEN (gates cannot be triggered by GITHUB_TOKEN)"
 
 # ---------- 3. optional: the Firestore runtime ----------

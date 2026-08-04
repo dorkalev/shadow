@@ -7,7 +7,8 @@
 # Quarterly access/mgmt interviews are kicked off by quarterly-rituals.yml (which
 # generates the packets first); their conversations are continued here.
 #
-# LLM dispatcher: uses whichever key is configured — ANTHROPIC_API_KEY (Claude,
+# LLM dispatcher: explicitly opt in with repo variable SHADOW_LLM_RITUALS=true,
+# then uses whichever key is configured — ANTHROPIC_API_KEY (Claude,
 # recommended for judgment work), GEMINI_API_KEY, or OPENAI_API_KEY (Codex).
 # The deterministic half never touches an LLM; the LLM half never approves anything;
 # humans answer by commenting on the issue with their authenticated identity.
@@ -108,12 +109,15 @@ jobs:
         if: contains('kickoff annual continue', steps.route.outputs.mode)
         id: llm
         env:
+          LLM_RITUALS_ENABLED: ${{ vars.SHADOW_LLM_RITUALS == 'true' }}
           HAS_ANTHROPIC: ${{ secrets.ANTHROPIC_API_KEY != '' }}
           HAS_GEMINI: ${{ secrets.GEMINI_API_KEY != '' }}
           HAS_OPENAI: ${{ secrets.OPENAI_API_KEY != '' }}
         run: |
           set -euo pipefail
-          if [ "$HAS_ANTHROPIC" = "true" ]; then
+          if [ "$LLM_RITUALS_ENABLED" != "true" ]; then
+            echo 'runner=' >> "$GITHUB_OUTPUT"
+          elif [ "$HAS_ANTHROPIC" = "true" ]; then
             npm install -g @anthropic-ai/claude-code
             echo 'runner=claude --allowedTools Bash(gh:*),Bash(git:*),Read,Write,Glob,Grep -p' >> "$GITHUB_OUTPUT"
           elif [ "$HAS_GEMINI" = "true" ]; then
@@ -123,12 +127,15 @@ jobs:
             npm install -g @openai/codex
             echo 'runner=codex exec' >> "$GITHUB_OUTPUT"
           else
-            echo "no LLM key configured (ANTHROPIC_API_KEY / GEMINI_API_KEY / OPENAI_API_KEY)" >&2
-            exit 1
+            echo 'runner=' >> "$GITHUB_OUTPUT"
           fi
 
+      - name: LLM rituals are disabled
+        if: contains('kickoff annual continue', steps.route.outputs.mode) && steps.llm.outputs.runner == ''
+        run: echo "LLM rituals are disabled or no LLM key is configured. Set SHADOW_LLM_RITUALS=true only when you are ready to run a budgeted ritual." >> "$GITHUB_STEP_SUMMARY"
+
       - name: Run interview turn
-        if: contains('kickoff continue', steps.route.outputs.mode)
+        if: contains('kickoff continue', steps.route.outputs.mode) && steps.llm.outputs.runner != ''
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -142,7 +149,7 @@ jobs:
           ${{ steps.llm.outputs.runner }} "$(cat .shadow/agent/05-async-interviews.md)"
 
       - name: Annual kickoffs
-        if: steps.route.outputs.mode == 'annual'
+        if: steps.route.outputs.mode == 'annual' && steps.llm.outputs.runner != ''
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
