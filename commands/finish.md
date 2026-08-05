@@ -1,5 +1,5 @@
 ---
-description: Pre-push gate — cleanup, spec alignment, commit, sync staging, push, PR ready, ticket to In Review
+description: Pre-push gate — cleanup, spec alignment, commit, sync main, push, PR ready, ticket to In Review
 ---
 # /shadow:finish — The Pre-Push Gate
 
@@ -13,9 +13,9 @@ Run in parallel:
 
 ```bash
 git branch --show-current
-git fetch origin staging
-git log origin/staging..HEAD --oneline
-git diff origin/staging..HEAD --stat
+git fetch origin main
+git log origin/main..HEAD --oneline
+git diff origin/main..HEAD --stat
 git status --short
 ```
 
@@ -27,7 +27,7 @@ Cleanup:
 - Remove temp/debug artifacts from the diff: `*.log`, `.DS_Store`, `__pycache__`, commented-out debug code, stray `console.log`/`print` added during this work.
 - **Secret scan the diff** — do not skip:
   ```bash
-  git diff origin/staging..HEAD | grep -inE 'aws_secret|api[_-]?key|token|password|BEGIN (RSA|EC|OPENSSH) PRIVATE KEY|secret' || echo "no obvious secrets"
+  git diff origin/main..HEAD | grep -inE 'aws_secret|api[_-]?key|token|password|BEGIN (RSA|EC|OPENSSH) PRIVATE KEY|secret' || echo "no obvious secrets"
   ```
   A real secret in the diff → STOP. Remove it, and if it was ever committed/pushed, treat as an incident (rotate the credential, then `/shadow:hotfix` discipline applies).
 - Run the project's linter and test suite. Failures → fix before proceeding.
@@ -35,7 +35,7 @@ Cleanup:
 ## Phase 2: Spec-alignment gate (BLOCKING)
 
 Compare the **ticket + spec comment** against the **actual diff**
-(`git diff origin/staging..HEAD`). Classify every mismatch:
+(`git diff origin/main..HEAD`). Classify every mismatch:
 
 | Type | Meaning | Resolution |
 |---|---|---|
@@ -54,11 +54,11 @@ Pushing misalignment just moves this conversation into `shadow-ci`'s red check.
 git add -A
 git commit -m "{IDENTIFIER}: {short description}"   # skip if nothing uncommitted
 
-git fetch origin staging
-git merge origin/staging --no-edit    # NEVER rebase pushed work
+git fetch origin main
+git merge origin/main --no-edit    # NEVER rebase pushed work
 ```
 
-Conflicts: resolve preferring our branch unless staging's side is a bug fix.
+Conflicts: resolve with the smallest scope-preserving change.
 Non-trivial conflict → STOP and ask the user. Re-run tests after the merge.
 
 ## Phase 4: Push, finalize PR, update ticket
@@ -69,7 +69,7 @@ gh pr ready {number}
 ```
 
 Write the final PR body — `shadow-ci` parses this structure strictly, and the
-**Changes section must list EVERY file in `git diff origin/staging..HEAD --name-only`**
+**Changes section must list EVERY file in `git diff origin/main..HEAD --name-only`**
 under its ticket (lockfiles too, e.g. "package-lock.json — regenerated for the
 dependency bump"):
 

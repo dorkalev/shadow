@@ -20,11 +20,11 @@ jobs:
   packets:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           fetch-depth: 0
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           workspaces: .shadow/ci
 
@@ -32,7 +32,7 @@ jobs:
         run: cargo build --release --manifest-path .shadow/ci/Cargo.toml
 
       # Optional: authenticate gcloud for the GCP IAM sections.
-      # - uses: google-github-actions/auth@v2
+      # - uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed # v2
       #   with:
       #     credentials_json: ${{ secrets.GCP_READONLY_SA_KEY }}
 

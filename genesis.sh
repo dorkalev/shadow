@@ -8,7 +8,7 @@
 #   ./genesis.sh --only CC6                         limit that optional deep review
 #
 # The story (nothing is simulated — synthetic content, real controls):
-#   1. create a brand-new GitHub repo, main + staging
+#   1. create a brand-new GitHub repo with a protected main branch
 #   2. install the shadow (gates, archive, board, criteria corpus, judgment.sh)
 #   3. (optional) terraform-apply the Firestore runtime, WIF-bound to this repo
 #   4. open a REAL issue, branch, commit, push
@@ -112,10 +112,12 @@ cp "$PLATFORM/actions/workflows/deterministic-verify.yml" .github/workflows/ # d
 cp "$PLATFORM/actions/workflows/daily-verify.yml"      .github/workflows/   # manual, budgeted deep review
 cp "$PLATFORM/actions/workflows/quarterly-rituals.yml" .github/workflows/   # evidence packets + interviews
 cp "$PLATFORM/actions/workflows/shadow-agent.yml"      .github/workflows/   # async interviews + reminders
-cp "$PLATFORM/actions/workflows/drill.yml"             .github/workflows/   # quarterly gate self-test
-cp "$PLATFORM/actions/workflows/compliance.yml" .github/workflows/   # requires shadow-reviewer by default
-cp "$PLATFORM/actions/workflows/review.yml"     .github/workflows/   # opt-in built-in reviewer
-cp "$PLATFORM/actions/workflows/post-merge-archive.yml" .github/workflows/
+  cp "$PLATFORM/actions/workflows/drill.yml"             .github/workflows/   # quarterly gate self-test
+  cp "$PLATFORM/actions/workflows/compliance.yml" .github/workflows/   # deterministic solo-founder gate
+  cp "$PLATFORM/actions/workflows/review.yml"     .github/workflows/   # opt-in built-in reviewer
+  cp "$PLATFORM/actions/workflows/post-merge-archive.yml" .github/workflows/
+  cp "$PLATFORM/actions/workflows/test.yml" .github/workflows/ci.yml
+  cp "$PLATFORM/actions/workflows/dependency-review.yml" .github/workflows/
 cat > .github/pull_request_template.md <<'EOF'
 ## Summary
 
@@ -140,7 +142,7 @@ mkdir -p policies/runbooks
 for reg in risk-register vendor-register access-register; do
   printf '# %s\n\nOPEN — populated by the shadow rituals (ritual-risks / ritual-vendors / ritual-access).\n' "$reg" > "policies/$reg.md"
 done
-printf '# Hotfix procedure\n\nDirect pushes to main are allowed only as documented emergencies: incident ticket + backport PR through the normal gates. The bypass detector bills undocumented ones.\n' > policies/runbooks/hotfix.md
+printf '# Hotfix procedure\n\nA protected-main bypass is allowed only for a documented emergency: incident ticket plus an after-the-fact PR through the normal gates. The bypass detector bills undocumented ones.\n' > policies/runbooks/hotfix.md
 cat > README.md <<EOF
 # $NAME
 
@@ -153,11 +155,10 @@ EOF
 git add -A && git commit -qm "Install the compliance shadow (gates + archive + board + judgment)"
 git branch -M main
 git push -qu origin main
-git checkout -qb staging && git push -qu origin staging
 gh label create shadow --description "opened by the compliance shadow" --color 9e2b25 >/dev/null 2>&1 || true
 gh label create shadow-drill --color d5cab0 >/dev/null 2>&1 || true
 gh label create incident --color b60205 >/dev/null 2>&1 || true
-ok "installed and pushed (main + staging)"
+ok "installed and pushed (main-only trunk flow)"
 
 step "scanners + intake (CC7.1, CC6.8, CC2.3)"
 gh api -X PUT "repos/$OWNER/$NAME/vulnerability-alerts" >/dev/null 2>&1 && ok "dependabot alerts on" || warn "dependabot alerts: could not enable"
@@ -166,6 +167,9 @@ gh api -X PATCH "repos/$OWNER/$NAME" --input - >/dev/null 2>&1 <<'JSON' && ok "s
 {"security_and_analysis":{"secret_scanning":{"status":"enabled"},"secret_scanning_push_protection":{"status":"enabled"}}}
 JSON
 gh api -X PUT "repos/$OWNER/$NAME/private-vulnerability-reporting" >/dev/null 2>&1 && ok "private vulnerability reporting on (the front door)" || true
+gh api -X PATCH "repos/$OWNER/$NAME/code-scanning/default-setup" \
+  -f state=configured -f query_suite=default >/dev/null 2>&1 \
+  && ok "CodeQL default setup enabled" || warn "CodeQL default setup unavailable on this repository/plan"
 
 step "wiring secrets for the Clock"
 if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
@@ -199,9 +203,9 @@ if [ -n "$GCP_PROJECT" ]; then
   mkdir -p shadow
   cat > shadow/scope.json <<EOF
 {"org": "$OWNER", "repos": ["$NAME"], "cloud": "gcp", "gcp_projects": ["$GCP_PROJECT"],
- "categories": ["security", "availability", "confidentiality"]}
+ "categories": ["security", "availability"]}
 EOF
-  # with a real cloud runtime, Availability + Confidentiality controls exist (backups, PITR, TLS, audit logs)
+  # Security is mandatory; Availability is selected because the runtime has an uptime commitment.
   git add -A && git commit -qm "Provision the Firestore runtime (#infra: WIF, backups+PITR, audit logs, uptime)" && git push -q
   ok "runtime live; WIF bound to $OWNER/$NAME; scope.json points the verifier at $GCP_PROJECT"
 else
@@ -224,21 +228,20 @@ JUDGMENT_ARGS=()
 ./judgment.sh "${JUDGMENT_ARGS[@]}"
 
 # ---------- 5. lock the doors (the check contexts now exist) ----------
-step "locking the doors: branch rulesets (now that the check contexts exist)"
-gh api -X POST "repos/$OWNER/$NAME/rulesets" --input - >/dev/null <<'JSON' && ok "staging ruleset: PR + green compliance checks required, no force push" || warn "staging ruleset failed"
-{"name":"shadow-staging","target":"branch","enforcement":"active",
- "conditions":{"ref_name":{"include":["refs/heads/staging"],"exclude":[]}},
- "bypass_actors":[{"actor_id":5,"actor_type":"RepositoryRole","bypass_mode":"always"}],
- "rules":[{"type":"pull_request","parameters":{"required_approving_review_count":0,"dismiss_stale_reviews_on_push":false,"require_code_owner_review":false,"require_last_push_approval":false,"required_review_thread_resolution":true}},
-          {"type":"required_status_checks","parameters":{"strict_required_status_checks_policy":false,"required_status_checks":[{"context":"compliance-audit"},{"context":"compliance-review-gate"}]}},
-          {"type":"non_fast_forward"},{"type":"deletion"}]}
-JSON
-gh api -X POST "repos/$OWNER/$NAME/rulesets" --input - >/dev/null <<'JSON' && ok "main ruleset: no direct pushes, no force, no deletion (admin bypass stays possible — and billed by the archive)" || warn "main ruleset failed"
+step "locking the doors: main + evidence rulesets (now that contexts exist)"
+gh api -X POST "repos/$OWNER/$NAME/rulesets" --input - >/dev/null <<'JSON' && ok "main ruleset: PR + green deterministic/security checks required; no force/delete" || warn "main ruleset failed"
 {"name":"shadow-main","target":"branch","enforcement":"active",
  "conditions":{"ref_name":{"include":["refs/heads/main"],"exclude":[]}},
- "bypass_actors":[{"actor_id":5,"actor_type":"RepositoryRole","bypass_mode":"always"}],
+ "bypass_actors":[],
  "rules":[{"type":"pull_request","parameters":{"required_approving_review_count":0,"dismiss_stale_reviews_on_push":false,"require_code_owner_review":false,"require_last_push_approval":false,"required_review_thread_resolution":false}},
+          {"type":"required_status_checks","parameters":{"strict_required_status_checks_policy":true,"required_status_checks":[{"context":"ci"},{"context":"dependency-review"},{"context":"compliance-audit"},{"context":"compliance-review-gate"}]}},
           {"type":"non_fast_forward"},{"type":"deletion"}]}
+JSON
+gh api -X POST "repos/$OWNER/$NAME/rulesets" --input - >/dev/null <<'JSON' && ok "archive ruleset: append-only history (no force/delete); every actor remains attributable" || warn "archive ruleset failed"
+{"name":"shadow-compliance-archives","target":"branch","enforcement":"active",
+ "conditions":{"ref_name":{"include":["refs/heads/compliance-archives"],"exclude":[]}},
+ "bypass_actors":[],
+ "rules":[{"type":"non_fast_forward"},{"type":"deletion"}]}
 JSON
 
 # ---------- 6. judgment: every criterion, tested ----------
@@ -258,8 +261,8 @@ echo "    • Background-check + security-training evidence per person (CC1.4)"
 echo "    • A human approver on production if you add teammates (solo founders: this is a disclosed SoD limitation — see below)"
 echo "    • Vendor DPAs / subprocessor SOC 2 reports on file (CC9.2)"
 echo
-warn "SoD note: review here is an automated agent, not an independent human. For a solo"
-warn "founder this is a defensible COMPENSATING control (gates + immutable archives +"
-warn "release confirmation), but it is a disclosed limitation, not satisfied segregation."
+warn "SoD note: there is one human. AI review is optional machine advice, never an"
+warn "independent approver. Protected main, deterministic gates, restricted deploy identity,"
+warn "tamper-evident archives, and monitoring are disclosed compensating controls."
 warn "Readiness ≠ a clean Type II — evidence must accrue over your audit window (months)."
 log "teardown when done admiring: gh repo delete $OWNER/$NAME --yes${GCP_PROJECT:+  (and terraform -chdir=$WORK/provision/gcp destroy)}"

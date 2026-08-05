@@ -2,9 +2,10 @@
 //
 // On every merged PR: assemble a complete JSON+MD archive (PR metadata, reviews,
 // comments, check runs, files, commits, the shadow-ci compliance comment) plus a
-// BYPASS ANALYSIS — required status checks are read from the *live* branch ruleset,
+// BYPASS ANALYSIS — required status checks are read from every live enforcement
+// layer (repository rulesets and classic branch protection),
 // and any merge that landed with a required check failed/missing is flagged
-// `is_bypass: true`. Records are committed to the append-only `compliance-archives`
+// `is_bypass: true`. Records are committed to the protected `compliance-archives`
 // branch. Bypasses are never forbidden — only detected, recorded, and announced.
 use crate::util::{commit_to_archives, curl_post, env_or, gh_json, utc_date};
 use serde_json::{json, Value};
@@ -13,7 +14,7 @@ use serde_json::{json, Value};
 /// failure/cancelled/missing on a required check means the merge bypassed it.
 pub fn classify(conclusion: Option<&str>, required: bool) -> &'static str {
     match conclusion {
-        Some("success") | Some("skipped") | Some("neutral") => "passed",
+        Some("success") => "passed",
         _ if required => "bypassed", // failure, cancelled, timed_out, action_required, or never ran
         _ => "informational",
     }
@@ -39,7 +40,10 @@ pub fn analyze_bypass(
         match lookup(req) {
             Some(conclusion) => match classify(conclusion.as_deref(), true) {
                 "passed" => passed.push(req.clone()),
-                _ => bypassed.push(format!("{req} ({})", conclusion.as_deref().unwrap_or("no conclusion"))),
+                _ => bypassed.push(format!(
+                    "{req} ({})",
+                    conclusion.as_deref().unwrap_or("no conclusion")
+                )),
             },
             None => bypassed.push(format!("{req} (never ran)")),
         }
@@ -49,7 +53,10 @@ pub fn analyze_bypass(
             continue;
         }
         if classify(conclusion.as_deref(), false) == "informational" {
-            informational.push(format!("{name} ({})", conclusion.as_deref().unwrap_or("none")));
+            informational.push(format!(
+                "{name} ({})",
+                conclusion.as_deref().unwrap_or("none")
+            ));
         }
     }
     (!bypassed.is_empty(), passed, bypassed, informational)
@@ -59,15 +66,7 @@ pub fn analyze_bypass(
 /// determined. The caller must fail-closed on Err — treating an unreadable
 /// ruleset as "nothing required" would silently disable bypass detection exactly
 /// when it matters most.
-fn required_contexts(repo: &str, base: &str) -> Result<Vec<String>, String> {
-    if let Ok(over) = std::env::var("REQUIRED_CHECKS_OVERRIDE") {
-        if !over.is_empty() {
-            return Ok(over.split(',').map(|s| s.trim().to_string()).collect());
-        }
-    }
-    // live ruleset so the archive can't drift from what GitHub actually enforces
-    let v = gh_json(&["api", &format!("repos/{repo}/rules/branches/{base}")])
-        .map_err(|e| format!("ruleset unreadable: {e}"))?;
+fn ruleset_contexts(v: &Value) -> Result<Vec<String>, String> {
     let arr = v.as_array().ok_or("ruleset response was not an array")?;
     Ok(arr
         .iter()
@@ -80,6 +79,52 @@ fn required_contexts(repo: &str, base: &str) -> Result<Vec<String>, String> {
         })
         .filter_map(|c| c["context"].as_str().map(String::from))
         .collect())
+}
+
+fn classic_protection_contexts(v: &Value) -> Vec<String> {
+    let required = &v["required_status_checks"];
+    let mut out: Vec<String> = required["contexts"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(String::from)
+        .collect();
+    out.extend(
+        required["checks"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|c| c["context"].as_str())
+            .map(String::from),
+    );
+    out
+}
+
+fn not_found(error: &str) -> bool {
+    error.contains("HTTP 404") || error.contains("Not Found")
+}
+
+fn required_contexts(repo: &str, base: &str) -> Result<Vec<String>, String> {
+    if let Ok(over) = std::env::var("REQUIRED_CHECKS_OVERRIDE") {
+        if !over.is_empty() {
+            return Ok(over.split(',').map(|s| s.trim().to_string()).collect());
+        }
+    }
+    let mut contexts = Vec::new();
+    match gh_json(&["api", &format!("repos/{repo}/rules/branches/{base}")]) {
+        Ok(v) => contexts.extend(ruleset_contexts(&v)?),
+        Err(e) if not_found(&e) => {}
+        Err(e) => return Err(format!("rulesets unreadable: {e}")),
+    }
+    match gh_json(&["api", &format!("repos/{repo}/branches/{base}/protection")]) {
+        Ok(v) => contexts.extend(classic_protection_contexts(&v)),
+        Err(e) if not_found(&e) => {}
+        Err(e) => return Err(format!("classic branch protection unreadable: {e}")),
+    }
+    contexts.sort();
+    contexts.dedup();
+    Ok(contexts)
 }
 
 pub fn run_archive() -> Result<i32, String> {
@@ -98,14 +143,26 @@ pub fn run_archive() -> Result<i32, String> {
         return Ok(0);
     }
     let sha = pr["headRefOid"].as_str().unwrap_or("");
-    let base = pr["baseRefName"].as_str().unwrap_or("staging");
+    let base = pr["baseRefName"].as_str().unwrap_or("main");
 
-    let comments = gh_json(&["api", &format!("repos/{repo}/issues/{pr_number}/comments"), "--paginate"])
-        .unwrap_or(Value::Array(vec![]));
-    let review_comments = gh_json(&["api", &format!("repos/{repo}/pulls/{pr_number}/comments"), "--paginate"])
-        .unwrap_or(Value::Array(vec![]));
+    let comments = gh_json(&[
+        "api",
+        &format!("repos/{repo}/issues/{pr_number}/comments"),
+        "--paginate",
+    ])
+    .unwrap_or(Value::Array(vec![]));
+    let review_comments = gh_json(&[
+        "api",
+        &format!("repos/{repo}/pulls/{pr_number}/comments"),
+        "--paginate",
+    ])
+    .unwrap_or(Value::Array(vec![]));
     let check_runs_raw = gh_json(&[
-        "api", &format!("repos/{repo}/commits/{sha}/check-runs"), "--paginate", "--jq", ".check_runs",
+        "api",
+        &format!("repos/{repo}/commits/{sha}/check-runs"),
+        "--paginate",
+        "--jq",
+        ".check_runs",
     ])
     .unwrap_or(Value::Array(vec![]));
     let statuses_raw = gh_json(&["api", &format!("repos/{repo}/commits/{sha}/status")])
@@ -115,10 +172,12 @@ pub fn run_archive() -> Result<i32, String> {
         .as_array()
         .map(|a| {
             a.iter()
-                .map(|c| (
-                    c["name"].as_str().unwrap_or("").to_string(),
-                    c["conclusion"].as_str().map(String::from),
-                ))
+                .map(|c| {
+                    (
+                        c["name"].as_str().unwrap_or("").to_string(),
+                        c["conclusion"].as_str().map(String::from),
+                    )
+                })
                 .collect()
         })
         .unwrap_or_default();
@@ -126,10 +185,18 @@ pub fn run_archive() -> Result<i32, String> {
         .as_array()
         .map(|a| {
             a.iter()
-                .map(|s| (
-                    s["context"].as_str().unwrap_or("").to_string(),
-                    s["state"].as_str().map(|st| if st == "success" { "success".into() } else { st.to_string() }),
-                ))
+                .map(|s| {
+                    (
+                        s["context"].as_str().unwrap_or("").to_string(),
+                        s["state"].as_str().map(|st| {
+                            if st == "success" {
+                                "success".into()
+                            } else {
+                                st.to_string()
+                            }
+                        }),
+                    )
+                })
                 .collect()
         })
         .unwrap_or_default();
@@ -143,7 +210,8 @@ pub fn run_archive() -> Result<i32, String> {
             (Vec::new(), false)
         }
     };
-    let (bypass_detected, passed, bypassed, informational) = analyze_bypass(&check_runs, &statuses, &required);
+    let (bypass_detected, passed, bypassed, informational) =
+        analyze_bypass(&check_runs, &statuses, &required);
     // unknown required set ⇒ treat as bypass-suspect (true), not clean
     let is_bypass = bypass_detected || !required_known;
 
@@ -165,7 +233,11 @@ pub fn run_archive() -> Result<i32, String> {
         pr["body"].as_str().unwrap_or(""),
         &ticket_pattern,
     );
-    let first_ticket = tickets.first().map(String::as_str).unwrap_or("noticket").to_lowercase();
+    let first_ticket = tickets
+        .first()
+        .map(String::as_str)
+        .unwrap_or("noticket")
+        .to_lowercase();
     let date = utc_date("%Y%m%d");
     let archive_id = format!("pr-{pr_number}-{first_ticket}-{date}");
 
@@ -196,7 +268,10 @@ pub fn run_archive() -> Result<i32, String> {
     commit_to_archives(
         &branch,
         &[
-            (format!("{archive_id}.json"), serde_json::to_string_pretty(&record).unwrap()),
+            (
+                format!("{archive_id}.json"),
+                serde_json::to_string_pretty(&record).unwrap(),
+            ),
             (format!("{archive_id}.md"), md.clone()),
         ],
         &format!("archive: {archive_id}"),
@@ -211,8 +286,11 @@ pub fn run_archive() -> Result<i32, String> {
             } else {
                 format!(":white_check_mark: #{pr_number} merged to {base}\n{title}")
             };
-            let _ = curl_post(&hook, &[("Content-Type", "application/json")],
-                &json!({"text": format!("{head}\n{url} · archive {archive_id}")}).to_string());
+            let _ = curl_post(
+                &hook,
+                &[("Content-Type", "application/json")],
+                &json!({"text": format!("{head}\n{url} · archive {archive_id}")}).to_string(),
+            );
         }
     }
 
@@ -225,7 +303,9 @@ fn render_md(r: &Value) -> String {
     let b = &r["bypass_merge"];
     let mut s = format!(
         "# Compliance Archive: PR #{}\n\n> {}\n> Archived at: {}\n\n",
-        pr["number"], pr["title"].as_str().unwrap_or(""), r["archived_at"].as_str().unwrap_or("")
+        pr["number"],
+        pr["title"].as_str().unwrap_or(""),
+        r["archived_at"].as_str().unwrap_or("")
     );
     if b["is_bypass"].as_bool() == Some(true) {
         s.push_str("## 🚨 MANUAL MERGE — REQUIRED CHECKS BYPASSED\n\n");
@@ -276,7 +356,8 @@ mod tests {
     #[test]
     fn classify_outcomes() {
         assert_eq!(classify(Some("success"), true), "passed");
-        assert_eq!(classify(Some("skipped"), true), "passed");
+        assert_eq!(classify(Some("skipped"), true), "bypassed");
+        assert_eq!(classify(Some("neutral"), true), "bypassed");
         assert_eq!(classify(Some("failure"), true), "bypassed");
         assert_eq!(classify(None, true), "bypassed");
         assert_eq!(classify(Some("failure"), false), "informational");
@@ -284,13 +365,24 @@ mod tests {
 
     #[test]
     fn bypass_detection() {
-        let runs = vec![(s("ci"), Some(s("success"))), (s("compliance-audit"), Some(s("failure")))];
+        let runs = vec![
+            (s("ci"), Some(s("success"))),
+            (s("compliance-audit"), Some(s("failure"))),
+        ];
         let statuses = vec![(s("review-bot"), Some(s("success")))];
-        let required = vec![s("ci"), s("compliance-audit"), s("review-bot"), s("never-ran")];
+        let required = vec![
+            s("ci"),
+            s("compliance-audit"),
+            s("review-bot"),
+            s("never-ran"),
+        ];
         let (bypass, passed, bypassed, _) = analyze_bypass(&runs, &statuses, &required);
         assert!(bypass);
         assert_eq!(passed, vec![s("ci"), s("review-bot")]);
-        assert_eq!(bypassed, vec![s("compliance-audit (failure)"), s("never-ran (never ran)")]);
+        assert_eq!(
+            bypassed,
+            vec![s("compliance-audit (failure)"), s("never-ran (never ran)")]
+        );
     }
 
     #[test]
@@ -299,5 +391,33 @@ mod tests {
         let (bypass, _, bypassed, _) = analyze_bypass(&runs, &[], &[s("ci")]);
         assert!(!bypass);
         assert!(bypassed.is_empty());
+    }
+
+    #[test]
+    fn required_contexts_union_rulesets_and_classic_protection() {
+        let rules = json!([{
+            "type": "required_status_checks",
+            "parameters": {"required_status_checks": [
+                {"context": "compliance-audit"},
+                {"context": "ci"}
+            ]}
+        }]);
+        let classic = json!({"required_status_checks": {
+            "contexts": ["ci", "CodeQL"],
+            "checks": [{"context": "dependency-review", "app_id": 15368}]
+        }});
+        let mut all = ruleset_contexts(&rules).unwrap();
+        all.extend(classic_protection_contexts(&classic));
+        all.sort();
+        all.dedup();
+        assert_eq!(
+            all,
+            vec![
+                s("CodeQL"),
+                s("ci"),
+                s("compliance-audit"),
+                s("dependency-review")
+            ]
+        );
     }
 }

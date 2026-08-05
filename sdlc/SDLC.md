@@ -1,4 +1,4 @@
-# The Dictated SDLC — simple, AI-first, SOC 2-compliant
+# The Dictated SDLC — simple, AI-first, SOC 2 readiness-shaped
 
 This is the one software development lifecycle the shadow tool installs and enforces. It is deliberately opinionated: our users are 1–10-person AI-first startups, so we don't adapt to an existing process — we *are* the process. Every step exists because a specific criterion demands it (mapping at the bottom). Nothing here is ceremony.
 
@@ -6,15 +6,14 @@ Design lineage: a spec-first agent workflow (`start → load → finish → fix-
 
 ## Roles
 
-At minimum one human (the founder) and one or more AI agents. **Honest SoD note:** when the only reviewer is an automated agent (no independent human), segregation of duties is not fully satisfied — this is a *compensating control* (branch protection, immutable archives, release confirmation, post-hoc review) and a **disclosed limitation** in the system description, not a claim of satisfied SoD. Add a human non-author approver on production the moment a second person exists. The agent may write all the code; the human owns approvals that need a person: merging to production, releases, incident declarations, quarterly reviews. Where a second reviewer is impossible, an independent review bot (a second LLM with no ability to push) plus the compliance agent stand in — and the report's system description says so honestly.
+There is exactly one human in the default operating model: the founder. AI tools, CI jobs, and service accounts are machine controls, not fictional employees and not organizational segregation of duties. The founder may develop and merge the same change. That concentration is disclosed and risk-accepted; protected pull requests, deterministic tests, restricted deploy credentials, tamper-evident archives, continuous monitoring, and periodic external examination are compensating controls. An optional read-only AI reviewer is an adviser, never an independent person or an approver.
 
 ## Branch topology
 
 ```
-main      ← production. Fast-forward only, from staging. Never pushed directly (except documented hotfix).
-staging   ← integration. All PRs target staging.
-{TICKET-ID}-{slug}  ← one branch per ticket, off staging.
-compliance-archives ← append-only evidence branch (never merged anywhere).
+main      ← production source. Every ordinary change arrives through a protected PR.
+{TICKET-ID}-{slug}  ← one branch per ticket, off main.
+compliance-archives ← evidence-only branch: no force-push/deletion; Actions appends records.
 ```
 
 ## The loop (per change)
@@ -24,10 +23,10 @@ No change without a ticket (Linear or GitHub Issues). The ticket states intent a
 *Auditor translation: authorization of change (CC8.1).*
 
 ### 2. Branch + draft PR
-Branch `{TICKET-ID}-{slug}` off `staging`; open a **draft PR to staging** immediately. The PR is the audit artifact from minute one.
+Branch `{TICKET-ID}-{slug}` off `main`; open a **draft PR to main** immediately. The PR is the audit artifact from minute one.
 
 ### 3. Spec before code
-The implementation plan is posted to the ticket as a comment **before** substantive code lands. For AI development this is the crucial inversion: the human (or reviewing agent) approves the *spec*, then the AI implements. Cheap at this size, priceless at audit.
+The implementation plan is posted to the ticket as a comment **before** substantive code lands. The founder records the authorization and intended result; implementation may be produced by the founder, an AI coding tool, or both.
 *Auditor translation: design + documentation of change (CC8.1).*
 
 ### 4. Implement, test, self-verify
@@ -46,25 +45,25 @@ Required structure — the compliance agent parses this:
 
 ### 6. Gates (required status checks — merges are impossible without them)
 1. **CI**: build + tests green.
-2. **Independent review**: review bot must post; unresolved CRITICAL/MAJOR findings block.
-3. **Compliance agent** (the shadow's per-PR auditor):
+2. **Automated semantic review, when armed**: advisory AI findings are identified as machine output; unresolved CRITICAL/MAJOR findings block. An unavailable reviewer never counts as a completed review.
+3. **Deterministic compliance gate**:
    - ticket(s) in PR title/body exist in the tracker (deterministic regex extraction — crash-safe),
    - every changed file traceable to a ticket via the Changes section,
    - test coverage for changed source files,
    - PR body ≥ 20 chars, structured,
-   - confidence score: start 100; −10/invalid ticket; −10/unspecced file; −5/untested file; −5/missing reviewer; **fail below 70**,
+   - confidence score: start 100; −10/invalid ticket; −10/unspecced file; −5/untested file; −5/missing explicitly-required automated adviser; **fail below 70**,
    - hard gates regardless of score: no valid ticket, empty description, unresolved critical/major review findings.
 
 ### 7. Merge ⇒ archive (automatic)
 On merge, a workflow writes `pr-{n}-{ticket}-{date}.json` + `.md` to the `compliance-archives` branch: full PR metadata, reviews, comments, check runs, files changed, commits, the compliance report, and a **bypass analysis** — required checks are read from the *live* branch ruleset, and any merge that landed with a required check failed/missing is flagged `is_bypass: true` and announced (Slack). Bypasses aren't forbidden — emergencies exist — but they are never silent.
-*Auditor translation: the complete, tamper-evident population of changes for Type II sampling.*
+*Auditor translation: the complete, tamper-evident population of changes for examination sampling. Git history alone is not described as immutable.*
 
-### 8. Release (staging → main)
-Human-triggered. Preconditions: CI green on staging, no unexplained bypasses. The release run: builds a summary of commits/PRs/tickets since last release → human confirms by typing a random confirmation word → writes `releases/release-{date}.json+md` to `compliance-archives` → creates a release ticket listing everything shipped → `git merge --ff-only` staging into main → comments the release link on every included ticket. If fast-forward fails, stop — never force-push.
-*Auditor translation: approval + implementation of change into production (CC8.1), segregation of duties in spirit (CC6.3).*
+### 8. Founder release approval + keyless deploy
+The founder merges the green PR to `main`; GitHub records the authenticated merge actor as management approval-of-record. CI deploys that exact commit using a restricted, keyless Workload Identity Federation principal. The deployer cannot change repository policy, and the coding tool receives no production credentials. This is not independent human approval; the disclosed solo-founder limitation remains.
+*Auditor translation: management authorization + controlled implementation of the change (CC8.1).*
 
 ### 9. Hotfix (the emergency valve)
-Direct push to `main` allowed only for genuine emergencies, and it costs paperwork by design: an **incident ticket** (what broke, impact, root cause, why the process was bypassed), a **backport PR** to staging cherry-picking the fix through the normal gates, and the bypass flag in the archive. An undocumented direct push is the one thing the shadow escalates loudest.
+An emergency bypass costs paperwork by design: an **incident ticket** describing impact and why the protected flow was bypassed, an after-the-fact PR carrying the normal tests and documentation, and a bypass flag in the archive. An undocumented direct push is the one thing the shadow escalates loudest.
 *Auditor translation: exceptions exist but are documented and remediated (CC7.4, CC8.1).*
 
 ## The clock (not per-change)
@@ -84,10 +83,10 @@ Direct push to `main` allowed only for genuine emergencies, and it costs paperwo
 |---|---|
 | Ticket-first + spec comment | CC8.1 (authorize, design, document) |
 | PR gates (CI, review, compliance agent) | CC8.1 (test, approve), CC4.1 (ongoing evaluation) |
-| Branch protection / rulesets, ff-only main | CC8.1, CC6.3 (least privilege over prod) |
+| Protected main + restricted keyless deploy | CC8.1, CC6.3 (least privilege over prod) |
 | compliance-archives + bypass detection | CC8.1, CC4.1, CC2.1 (quality information) |
 | Hotfix procedure | CC7.4, CC7.5, CC8.1 |
-| Release records + tickets | CC8.1, CC2.2 |
+| Founder merge record + deployment record | CC8.1, CC2.2 |
 | Access reviews, on/offboarding tickets | CC6.1–CC6.3 |
 | Alert triage cadence | CC7.1, CC7.2 |
 | Management review minutes | CC1.2, CC4.2 |
@@ -99,6 +98,7 @@ Direct push to `main` allowed only for genuine emergencies, and it costs paperwo
 ## AI-specific rules
 
 - Agents operate through the same gates as humans — same tickets, same PRs, same checks. No agent-only side doors.
-- Agent-authored changes are never self-approved: the approving identity (human or independent bot) must differ from the authoring identity.
+- AI review is advisory. It never approves, never creates human independence, and an unavailable/failed run never receives review credit.
+- In the solo-founder profile the founder may both author and merge; that concentration is disclosed, monitored, and accepted rather than hidden behind bot identities.
 - Agent credentials are scoped tokens (no org admin), inventoried in the access register, rotated like any credential (CC6.1–6.3).
 - Prompts/specs that drove a change live on the ticket — that's the design record for AI work (CC8.1).

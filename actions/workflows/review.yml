@@ -1,18 +1,17 @@
 # Shadow Review — copy into .github/workflows/review.yml
 # The built-in review bot for day-one installs: an opt-in LLM review
-# agent (Claude preferred; Gemini/Codex accepted — first configured key wins)
+# adviser (Claude preferred; Gemini/Codex accepted — first configured key wins)
 # reviews the PR diff and posts findings as inline review threads with severity
-# prefixes. The compliance gate already blocks merges on unresolved
-# Critical/Major bot threads, and requires this reviewer's marker comment
-# (REQUIRED_REVIEWERS: "shadow-reviewer") — so unmitigated findings make the
-# PR unmergeable until fixed-and-resolved or justified-and-resolved.
+# prefixes. It is an automated advisory control, not an independent person.
+# Repositories may require its completed-review marker by setting
+# REQUIRED_REVIEWERS=shadow-reviewer; the solo-founder profile does not.
 # Installing a third-party review-bot app later? Set REQUIRED_REVIEWERS to its
 # login and delete this file — the gate treats them identically.
 name: Shadow Review
 
 on:
   pull_request:
-    branches: [staging, main]
+    branches: [main]
     types: [opened, synchronize, reopened, ready_for_review]
 
 concurrency:
@@ -31,7 +30,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
@@ -77,7 +76,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
-          echo "::warning::no LLM key configured — this PR was NOT independently reviewed"
-          gh api "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" -f body="<!-- shadow-review -->
+          echo "::warning::no LLM key configured — optional automated semantic review did not run"
+          gh api "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" -f body="<!-- shadow-review:unavailable -->
           ## Shadow Review
-          ⚠️ **LLM review was not armed for this PR.** Set repo variable `SHADOW_LLM_REVIEW=true` and configure an LLM key to enable it. This notice satisfies the reviewer-presence gate so work isn't deadlocked, but it is itself evidence of the gap." >/dev/null
+          ⚠️ **Automated semantic review did not run.** Set repo variable `SHADOW_LLM_REVIEW=true` and configure an LLM key to enable the optional adviser. This notice is evidence of non-operation and never satisfies a completed-review requirement." >/dev/null

@@ -19,7 +19,7 @@ Runs on every PR event, in two phases (`REVIEW_PHASE`):
 | Description | body ≥ 20 chars; sections `## Summary / ## Tickets / ## Changes / ## Test Plan` | too short ⇒ **hard fail**; missing sections reported |
 | Change traceability | every changed file's path or basename must appear in the PR body (lock files exempt) | −10 per unspecced file |
 | Test coverage | changed source files need a matching test file (`test_*`, `*_test.*`, `*.test.*`, `*.spec.*`, `tests/`) or inline `#[cfg(test)]`; `TEST_EXCLUDE_PATHS` exempts prefixes | −5 per untested file |
-| Review gate | unresolved review-bot threads classified CRITICAL/MAJOR by regex; required reviewers must have posted (post-review phase). `shadow-reviewer` (the built-in `review.yml` agent) is the day-one default — its presence is its `<!-- shadow-review -->` marker comment; set REQUIRED_REVIEWERS to a third-party bot's login instead if one is installed, the gate treats them identically | findings ⇒ **hard fail**; −5 per missing reviewer (+hard fail post-review) |
+| Review gate | unresolved review-bot threads classified CRITICAL/MAJOR by regex; explicitly configured reviewer logins must have posted (post-review phase). The built-in review workflow is optional and advisory; only `<!-- shadow-review:complete -->` counts as a completed run, while unavailable/legacy markers never satisfy the gate | findings ⇒ **hard fail**; −5 per configured missing reviewer (+hard fail post-review) |
 
 Score starts at 100; fail below `CONFIDENCE_THRESHOLD` (default 70) or on any hard gate. A `compliance:exempt` label records the checks without enforcing them. The result is posted as one self-updating PR comment per phase (markers `<!-- shadow-ci:audit -->`, `<!-- shadow-ci:review-gate -->`) plus `compliance_report.json`.
 
@@ -33,17 +33,17 @@ Pre-fills the meeting: gauge trend (last 13 readings from `shadow.db`), bypass m
 
 ### `shadow-ci release-record` — the release evidence record (CC8.1)
 
-Gathers commits, PR numbers, tickets, and diff stats between `origin/main` and `origin/staging` and writes `releases/release-{ts}.json+md` to the archives branch. Called by the `release` command after the human confirmation word; removes the most error-prone mechanical step from releases.
+Gathers commits, PR numbers, tickets, and diff stats between `RELEASE_FROM` (the prior release SHA) and `RELEASE_TO` (default `origin/main`) and writes `releases/release-{ts}.json+md` to the archives branch. Called by the `release` command after the founder confirmation word.
 
 All three write locally by default; `ARCHIVES_PUSH=1` commits to the archives branch (packets land under `evidence/{year}/{quarter}/`).
 
 ### `shadow-ci attest` — the CPA's fieldwork, on demand (CC8.1, CC4.1)
 
-For any audit window (`SINCE`/`UNTIL`): builds the change population from **three independent sources** — GitHub's merged-PR API, the git history of staging, and the archive records — reconciles them for completeness (direct pushes, missing archives, and orphan records all surface), then attribute-tests **100% of the population** (no sampling): T1 authorized with the ticket created *before* the PR (self-citations and nonexistent tickets fail), T2 independently reviewed, T3 gated with no bypass, T4 documented, T5 via staging. Emits `attestation-{window}.md/.json` with population tables, per-item verdicts, the exception list, and a conclusion line; exit code 1 when exceptions exist. `ARCHIVES_PUSH=1` files it under `evidence/attestations/`. The `testimony.sh` wrapper (installed by genesis) runs it from any shadow repo. This is the report you hand the auditor on day one — or run quarterly so the answer is never a surprise.
+For any audit window (`SINCE`/`UNTIL`): builds the change population from three reconciled GitHub records — merged PRs, `main` history, and protected archive records — then tests **100% of the population**: T1 authorized by a valid ticket created before the PR, T2 merged by the authenticated founder/management actor (the author may be the same person), T3 gated with no bypass, T4 documented, and T5 delivered through the main PR path. Direct pushes, missing archives, and orphan records surface as exceptions. `ARCHIVES_PUSH=1` files the resulting report under `evidence/attestations/`.
 
 ### `shadow-ci archive` — the post-merge evidence record
 
-On every merged PR: one JSON + one MD record (full PR metadata, reviews, comments, check runs, files, commits, and the compliance comment verbatim) committed to the append-only **`compliance-archives`** branch (auto-created on first run). Includes **bypass detection**: required status checks are read from the *live branch ruleset* (`gh api repos/{repo}/rules/branches/{base}`), so the archive can't drift from what GitHub actually enforces; any merge that landed with a required check failed or missing is flagged `is_bypass: true` and announced on Slack if `SLACK_WEBHOOK_URL` is set. This branch **is** the Type II sampling population for CC8.1 — pre-assembled.
+On every merged PR: one JSON + one MD record (full PR metadata, reviews, comments, check runs, files, commits, and the compliance comment verbatim) committed to protected **`compliance-archives`**. Required status checks are the union of active repository rulesets and classic branch protection, so any merge with a failed or missing required check is flagged `is_bypass: true`. The branch blocks force pushes and deletion; normal records are appended by Actions, all writers remain attributable, and population reconciliation detects omissions/extras. This is tamper-evident source evidence for CC8.1, not a claim of legal immutability or exclusive machine write access.
 
 ## Distribution — three ways a repo consumes the shadow
 
@@ -68,7 +68,7 @@ Start vendored (works before this platform is even on GitHub); graduate to centr
    .github/pull_request_template.md  ← the 4 sections
    ```
 2. **Secrets**: LLM keys are optional (`ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, or `OPENAI_API_KEY`) and stay inert unless a repo variable explicitly enables the relevant LLM workflow. `LINEAR_API_KEY` is optional for ticket verification; `SLACK_WEBHOOK_URL` is optional for bypass/merge alerts.
-3. **Rulesets**: after the first green runs, register `compliance-audit` and `compliance-review-gate` as required status checks on `staging`; block direct pushes and force pushes on `main`. Leave admin bypass possible — the archive detects and bills it.
+3. **Rulesets**: after the first green runs, require `ci`, `dependency-review`, `compliance-audit`, and `compliance-review-gate` on `main`; require PRs; block force pushes and deletion. Protect `compliance-archives` separately against force pushes and deletion; record/reconcile every append.
 4. **Tune** the env block in `compliance.yml`: `TICKET_PATTERN` (e.g. `#[0-9]+` for GitHub Issues), reviewers, `TEST_EXCLUDE_PATHS`.
 
 ## The workflows
@@ -76,7 +76,7 @@ Start vendored (works before this platform is even on GitHub); graduate to centr
 | Workflow | Trigger | What it runs |
 |---|---|---|
 | `compliance.yml` | PR opened/updated/edited/labeled | `shadow-ci check` twice (audit + review-gate phases), report artifact 90 days |
-| `test.yml` | PRs and pushes to `main`/`staging` | Rust unit tests plus machine-readable coverage measurements for the control binary and gauge app |
+| `test.yml` | PRs to and pushes on `main` | Rust unit tests plus machine-readable coverage measurements for the control binary and gauge app |
 | `post-merge-archive.yml` | PR closed & merged | `shadow-ci archive` → compliance-archives + Slack |
 | `daily-verify.yml` | manual only | Explicitly authorized, 12-turn Claude deep review on `agent/03-verify-compliance.md` |
 | `deterministic-verify.yml` | cron daily + manual | `shadow-ci verify` plus a static dashboard artifact — live GitHub MFA, protected branches, and open security findings; no LLM or model key |
@@ -95,7 +95,7 @@ With `shadow-agent.yml` installed, no human ever invokes a compliance command. T
 |---|---|
 | **Rust (`shadow-ci`), no LLM** | PR gates, post-merge archives + bypass detection, evidence packets, release records, populations, reminder sweeps. Deterministic — the controls an auditor tests are reproducible byte-for-byte, and there is no API key in the merge path. |
 | **LLM, headless and opt-in** (Claude recommended for judgment work; Gemini or Codex accepted) | A manually authorized deep review; composing interview questions from gathered evidence; parsing human answers into filed artifacts; drafting postmortems, tabletop scenarios, and the system description. Never approves anything. |
-| **Humans, async** | Answering numbered questions by commenting on interview issues — the only work segregation of duties actually requires. Answers are accepted only from OWNER/MEMBER/COLLABORATOR accounts and never from bots; the commenter's authenticated GitHub identity is recorded as the signer, which is stronger evidence than a typed name. `/finalize` files with what's answered (gaps recorded as OPEN, never assumed); `/cancel` aborts on the record. |
+| **Founder, async** | The sole human answers judgment questions and signs through an authenticated GitHub identity. The system discloses this concentration and relies on preventive machine gates, logs, reconciliation, and CPA scrutiny as compensating controls; bots are never counted as organizational segregation of duties. `/finalize` files gaps as OPEN, never assumed. |
 
 The interview protocol (issue format, state marker, answer parsing, idempotence, cost discipline) is `agent/05-async-interviews.md` — the same ritual commands run synchronously in a Claude Code session or asynchronously over issues, unchanged.
 

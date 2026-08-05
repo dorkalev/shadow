@@ -15,7 +15,7 @@ For each in-scope criterion, execute its check table (gh api, gcloud, URL fetche
 
 Cross-cutting checks that must always run (they feed the hard gates):
 - Org 2FA requirement on (CC6.1/6.2).
-- Rulesets intact on `main`/`staging` with the compliance contexts still required (CC8.1) — drift here is the classic silent failure.
+- Rulesets intact on `main` and `compliance-archives`, with all required contexts still enforced (CC8.1) — drift here is the classic silent failure.
 - `compliance-archives` completeness: every PR merged since last run has an archive record; any record with `is_bypass: true` has a linked incident/hotfix ticket (SDLC §9).
 - Open critical Dependabot/secret-scanning/CodeQL alerts older than the SLA in the vulnerability policy (CC7.1).
 - Service-account keys older than 90 days; new `owner`-level IAM grants since last run (CC6.3).

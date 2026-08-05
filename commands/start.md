@@ -1,11 +1,11 @@
 ---
-description: Pick or create a ticket, branch off staging, open a draft PR, ticket to In Progress
+description: Pick or create a ticket, branch off main, open a draft PR, ticket to In Progress
 ---
 # /shadow:start — Open Work
 
 No ticket, no branch. This command turns intent into the audit artifacts the
 rest of the SDLC hangs off: a ticket, a `{TICKET-ID}-{slug}` branch off
-`staging`, and a draft PR to `staging` from minute one.
+`main`, and a draft PR to `main` from minute one.
 
 ## Phase 1: Select or create the ticket
 
@@ -38,16 +38,16 @@ gh pr list --state open --search "${IDENTIFIER}" --json number,headRefName,url
 ## Phase 3: Branch + draft PR
 
 ```bash
-git fetch origin staging
-git checkout -b "${BRANCH_NAME}" origin/staging
+git fetch origin main
+git checkout -b "${BRANCH_NAME}" origin/main
 git push -u origin "${BRANCH_NAME}"
 ```
 
-Open the draft PR **to staging** (never to main) with all four required sections
+Open the draft PR **to main** with all four required sections
 — the `shadow-ci` compliance checker parses this structure:
 
 ```bash
-gh pr create --draft --base staging --head "${BRANCH_NAME}" \
+gh pr create --draft --base main --head "${BRANCH_NAME}" \
   --title "${IDENTIFIER}: ${TITLE}" \
   --body "## Summary
 ${one_or_two_sentences_of_intent}

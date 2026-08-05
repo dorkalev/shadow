@@ -3,10 +3,10 @@ description: Triage and resolve review-bot findings — fix Critical/Major, loop
 ---
 # /shadow:fix-pr — Answer the Reviewer
 
-The independent review bot is the second identity that makes agent-authored
-changes non-self-approved. Unresolved CRITICAL/MAJOR findings are a hard gate
-in `shadow-ci`'s post-review phase (`<!-- shadow-ci:review-gate -->`) —
-resolving them promptly is just cheaper than being blocked at merge.
+The optional review bot is a semantic adviser, not a second person and not an
+organizational approval. When its login is explicitly configured as required,
+unresolved CRITICAL/MAJOR findings are a hard gate in `shadow-ci`'s
+post-review phase (`<!-- shadow-ci:review-gate -->`).
 
 ## Phase 1: Fetch all review findings
 
@@ -55,8 +55,10 @@ For each CRITICAL/MAJOR finding, exactly one of:
    gh api graphql -f query='mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{isResolved}}}' -f id={thread_id}
    ```
 
-Never resolve a thread silently, and never weaken a check, delete a test, or
-suppress a linter rule to make a finding disappear.
+Never resolve a thread silently. In the solo-founder model, the founder must
+make and record the false-positive judgment; an authoring agent may implement
+the resulting fix but must not decide its own finding is invalid. Never weaken
+a check, delete a test, or suppress a linter rule to make a finding disappear.
 
 ## Phase 4: Commit, push, request re-review
 

@@ -1,12 +1,13 @@
 # Post-merge evidence archive — copy into .github/workflows/post-merge-archive.yml
 # On every merged PR: full JSON+MD record (PR, reviews, comments, checks, compliance
 # report) with bypass detection against the live branch ruleset, committed to the
-# append-only compliance-archives branch. Bypasses trigger a Slack alert if configured.
+# protected compliance-archives branch. Force-push and deletion are blocked;
+# every append is attributable and the verifier reconciles the full population.
 name: Post-Merge Archive
 
 on:
   pull_request:
-    branches: [staging, main]
+    branches: [main]
     types: [closed]
 
 permissions:
@@ -19,12 +20,12 @@ jobs:
     if: github.event.pull_request.merged == true
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           fetch-depth: 0
-          # default token can push to compliance-archives as long as no ruleset protects it
+          # The archive ruleset blocks history rewrite; this workflow appends the normal records.
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           workspaces: .shadow/ci
 
@@ -35,7 +36,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-          TICKET_PATTERN: "[A-Z]{2,6}-[0-9]+"
+          TICKET_PATTERN: "[A-Z]{2,6}-[0-9]+|#[0-9]+"
           ARCHIVES_BRANCH: compliance-archives
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}  # optional
         run: .shadow/ci/target/release/shadow-ci archive

@@ -12,18 +12,18 @@ development work in this repo, you are inside one of these commands.
 | Command | When to use |
 |---|---|
 | `/shadow:capture` | A feature was just planned in conversation. Distills it into a ticket (problem, approach, acceptance criteria) with the spec as first comment. |
-| `/shadow:start` | Beginning any piece of work. Picks or creates a ticket, branches off `staging`, opens a draft PR. No ticket, no branch. |
+| `/shadow:start` | Beginning any piece of work. Picks or creates a ticket, branches off `main`, opens a draft PR to `main`. No ticket, no branch. |
 | `/shadow:load` | After start (or when handed a ticket). Researches the codebase, posts the implementation spec to the ticket, then implements within it. |
 | `/shadow:verify` | UI-facing work is implemented. Walks each acceptance criterion in a real browser, screenshots to `.shadow-evidence/`, posts the verified story to the ticket (CC8.1 "tested"). |
-| `/shadow:finish` | Work is done locally. Cleanup, spec-alignment gate, commit, sync with staging, push, mark PR ready, ticket to In Review. |
+| `/shadow:finish` | Work is done locally. Cleanup, spec-alignment gate, commit, sync with `main`, push, mark PR ready, ticket to In Review. |
 | `/shadow:fix-compliance` | The `shadow-ci` check failed on the PR. Reads the actual CI report and fixes each failure type mechanically. |
 | `/shadow:fix-pr` | The review bot left findings. Triages, fixes Critical/Major, loops until clean. |
-| `/shadow:release` | Human decides to ship. Promotes green `staging` into `main` (ff-only) with a full release record in `compliance-archives`. |
-| `/shadow:hotfix` | Someone pushed directly to `main` (emergency). Files the incident ticket and backport PR that the bypass detector will demand. |
+| `/shadow:release` | Human records a production release already delivered by a gated merge to `main`, with a full release record in `compliance-archives`. |
+| `/shadow:hotfix` | Someone bypassed the protected `main` path in an emergency. Files the incident and a remediation PR that the bypass detector will demand. |
 
 ## The rituals (interview commands)
 
-Everything SOC 2 traditionally makes humans do by hand, reduced to a dialogue. Every ritual follows the same three-phase pattern — **GATHER** (zero questions: the tool collects every discoverable fact via `shadow-ci`, `gh`, `gcloud`, registers, archives), **INTERVIEW** (judgment only: batched questions with the evidence attached to each, sensible defaults offered), **FILE** (zero questions: signed artifact committed, follow-up tickets opened, one-screen summary). Segregation of duties is the design, not the excuse: the agent never answers its own questions, never defaults an approval to yes, and the responding human's name goes on the record. Unanswered items are filed as OPEN, never assumed.
+Everything SOC 2 traditionally makes humans do by hand, reduced to a dialogue. Every ritual follows the same three-phase pattern — **GATHER** (zero questions: the tool collects every discoverable fact via `shadow-ci`, `gh`, `gcloud`, registers, archives), **INTERVIEW** (judgment only: batched questions with the evidence attached to each, sensible defaults offered), **FILE** (zero questions: signed artifact committed, follow-up tickets opened, one-screen summary). In the disclosed one-person model the founder supplies management judgment; the agent gathers and checks evidence but is never counted as a second person or independent approver. Unanswered items are filed as OPEN, never assumed.
 
 | Command | Cadence | What the human's job shrinks to |
 |---|---|---|
@@ -60,7 +60,7 @@ Everything SOC 2 traditionally makes humans do by hand, reduced to a dialogue. E
                                    compliance-archives (bypass-checked)
                                           │
                                           ▼
-                                   /shadow:release  (staging → main, human-confirmed)
+                                   /shadow:release  (records the deployed main SHA)
 
 Emergency path (direct push to main):
   hotfix lands ──► /shadow:hotfix (incident ticket + backport PR) ──► normal gates
@@ -69,10 +69,9 @@ Emergency path (direct push to main):
 ## Branch topology (fixed — never improvise)
 
 ```
-main                 production. Fast-forward only, from staging. Never pushed directly (except documented hotfix).
-staging              integration. ALL PRs target staging.
-{TICKET-ID}-{slug}   one branch per ticket, off staging.
-compliance-archives  append-only evidence branch. Never merged anywhere.
+main                 production. ALL change PRs target main; required checks gate the merge.
+{TICKET-ID}-{slug}   one branch per ticket, off main.
+compliance-archives  protected evidence branch. Normal records come from Actions; every append is attributable; never merged anywhere.
 ```
 
 ## Tracker
@@ -85,10 +84,11 @@ extract it from the tracker's response.
 ## Philosophy
 
 Evidence is a side effect of working, not a phase. Every change moves
-ticket-first through a draft PR, a spec comment, tests, an independent review,
+ticket-first through a draft PR, a spec comment, tests, deterministic gates,
 and the `shadow-ci` compliance check — so the audit trail writes itself at the
-time the work happens, never reconstructed later. Agents go through the same
-doors as humans: same tickets, same PRs, same gates, and never self-approval —
-the approving identity (human or independent review bot) must differ from the
-authoring identity. When a gate is red, the fix is to satisfy the gate, never
-to weaken it; a gate change is itself a ticketed, reviewed change.
+time the work happens, never reconstructed later. The sole founder may author
+and merge, and the authenticated merge is the management approval of record.
+AI review is advisory; required tests, security checks, protected branches,
+tamper-evident commit history, and post-merge reconciliation are the compensating
+machine controls. When a gate is red, the fix is to satisfy the gate; a gate
+change is itself a ticketed change with a recorded rationale.

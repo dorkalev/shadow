@@ -17,11 +17,11 @@ If enabling 2FA would eject members (API returns the list), report who and stop 
 ## Step 2 — Branch topology + rulesets (CC8.1, CC6.3)
 
 Per repo:
-1. Ensure `staging` exists (branch from default if missing); ensure default branch is `main`.
-2. Create the `compliance-archives` orphan branch with a README explaining it is append-only evidence.
+1. Ensure the default branch is `main`; feature branches start from and merge back to `main`.
+2. Create the `compliance-archives` orphan branch with a README explaining it is protected, tamper-evident evidence.
 3. Rulesets (`gh api -X POST /repos/{org}/{repo}/rulesets`):
-   - **main**: pull requests only from `staging` in practice — block direct pushes (non-admin), block force pushes and deletions, require status checks. Leave admin bypass possible but *detected* (bypass detection in Step 4 makes it expensive, per SDLC §9).
-   - **staging**: require PR, require required status checks (`ci`, `compliance-audit`, review-bot context once known), block force pushes, require conversation resolution.
+   - **main**: require pull requests and status checks (`ci`, `dependency-review`, `compliance-audit`, `compliance-review-gate`), block force pushes and deletions, and require conversation resolution. An emergency founder bypass, if the plan permits one, is detected and documented per SDLC §9.
+   - **compliance-archives**: block force pushes and deletions. The standard workflow appends records; GitHub audit logs attribute every direct append and reconciliation exposes missing or extra records. Do not claim the built-in `GITHUB_TOKEN` can be the sole bypass actor—repository rulesets do not accept that integration on every account/plan.
 
 ## Step 3 — CI gates (CC8.1)
 
@@ -36,7 +36,7 @@ Install the platform's native tooling (the full contract and file list live in [
 3. `compliance.yml` runs `shadow-ci check` in two phases (`audit` at awaiting-review, `review-gate` at post-review). Tune its env block: `TICKET_PATTERN` from Step 0, reviewers, `TEST_EXCLUDE_PATHS`, `CONFIDENCE_THRESHOLD` (default 70). Secret `LINEAR_API_KEY` only if Linear ticket verification is wanted — the gates are deterministic and need no LLM key.
 4. `post-merge-archive.yml` runs `shadow-ci archive` on merge: JSON+MD record to the auto-created `compliance-archives` branch, **bypass detection** against the live branch ruleset, Slack alert via `SLACK_WEBHOOK_URL` if set.
 5. `deterministic-verify.yml` runs the daily clock loop without an LLM. `daily-verify.yml` is a manual, explicitly approved deep review; use it only for judgment work and set a spend budget first.
-6. Register the compliance contexts (`compliance-audit`, `compliance-review-gate`) as **required status checks** in the Step 2 rulesets (do this after first successful runs so the context names are exact).
+6. Register all contexts from Step 2 as **required status checks** on `main` (do this after first successful runs so the context names are exact).
 7. PR template (`.github/pull_request_template.md`) with the four required sections: Summary / Tickets table / Changes / Test Plan.
 
 ## Step 4 — Scanners on (CC7.1, CC6.8)

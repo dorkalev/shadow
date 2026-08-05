@@ -44,7 +44,7 @@ treated as pass.
 An LLM is never the source of truth, never scheduled by default, and never
 allowed to turn `unknown` into `pass`. Adopting Drata, Vanta, or an auditor portal
 later is an adapter problem: ingest `shadow/readiness-latest.json` or the
-append-only snapshots using `readiness-snapshot.schema.json`.
+new, protected snapshots using `readiness-snapshot.schema.json`; prior snapshots are never rewritten.
 
 ## Path to 100
 

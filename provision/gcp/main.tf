@@ -202,8 +202,10 @@ resource "google_cloud_run_v2_service" "app" {
   }
 }
 
-# Public app (remove for internal-only services).
+# Public invocation is opt-in. A public Cloud Run edge is safe only when the
+# application enforces authentication and resource-level authorization.
 resource "google_cloud_run_v2_service_iam_member" "public" {
+  count    = var.public_invoker ? 1 : 0
   name     = google_cloud_run_v2_service.app.name
   location = var.region
   role     = "roles/run.invoker"
@@ -287,7 +289,7 @@ resource "google_monitoring_alert_policy" "uptime" {
     condition_threshold {
       filter          = "metric.type=\"monitoring.googleapis.com/uptime_check/check_passed\" AND resource.type=\"uptime_url\" AND metric.labels.check_id=\"${google_monitoring_uptime_check_config.app.uptime_check_id}\""
       comparison      = "COMPARISON_GT"
-      threshold_value = 0   # any failing check in the window trips the alert
+      threshold_value = 0 # any failing check in the window trips the alert
       duration        = "300s"
       aggregations {
         alignment_period     = "300s"

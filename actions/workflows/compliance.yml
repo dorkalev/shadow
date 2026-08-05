@@ -2,13 +2,14 @@
 # Requires the shadow-ci crate vendored at .shadow/ci (see actions/README.md).
 # Two phases, mirroring the audit/review-gate split:
 #   audit        — runs immediately; tickets + traceability + tests. Bot reviews expected, not required.
-#   review-gate  — same checks plus required reviewers and unresolved-findings gate.
-# Register BOTH job names as required status checks on the staging ruleset.
+#   review-gate  — same checks plus any explicitly configured reviewer and
+#                  unresolved-findings gate.
+# Register BOTH job names as required status checks on main.
 name: Shadow Compliance
 
 on:
   pull_request:
-    branches: [staging, main]
+    branches: [main]
     types: [opened, synchronize, reopened, ready_for_review, edited, labeled, unlabeled]
 
 concurrency:
@@ -34,11 +35,11 @@ jobs:
             key: review-gate
     name: compliance-${{ matrix.key }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           fetch-depth: 0
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           workspaces: .shadow/ci
 
@@ -54,15 +55,18 @@ jobs:
           # ---- tune per repo ----
           TICKET_PATTERN: "[A-Z]{2,6}-[0-9]+|#[0-9]+"   # Linear/Jira ids and GitHub issue refs
           CONFIDENCE_THRESHOLD: "70"
-          EXPECTED_REVIEWERS: "shadow-reviewer"   # audit phase: noted if absent, not blocking
-          REQUIRED_REVIEWERS: "shadow-reviewer"   # review-gate phase: blocking. Set to a third-party bot login if one is installed
+          # Solo-founder default: no fictional second person and no paid model
+          # dependency. Set both to shadow-reviewer (or an installed bot login)
+          # only when that automated advisory control is intentionally required.
+          EXPECTED_REVIEWERS: ""
+          REQUIRED_REVIEWERS: ""
           TEST_EXCLUDE_PATHS: ""             # csv of path prefixes exempt from test coverage
           LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}  # optional; omit to skip ticket verification
         run: .shadow/ci/target/release/shadow-ci check
 
       - name: Upload report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
         with:
           name: compliance-report-${{ matrix.key }}-${{ github.event.pull_request.number }}
           path: compliance_report.json

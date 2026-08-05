@@ -25,6 +25,12 @@ variable "service_name" {
   default     = "app"
 }
 
+variable "public_invoker" {
+  description = "Expose Cloud Run to unauthenticated callers. Keep false unless the application enforces authentication and resource-level authorization itself."
+  type        = bool
+  default     = false
+}
+
 variable "backup_retention_days" {
   description = "Retention for daily Firestore backups (A1.2 evidence window; max 98)"
   type        = number

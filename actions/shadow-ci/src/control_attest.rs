@@ -16,7 +16,10 @@ pub fn run_control_attest() -> Result<i32, String> {
     if expires_at <= attested_at {
         return Err("EXPIRES_AT must be a future ISO-8601 UTC timestamp".into());
     }
-    if !criterion.chars().all(|c| c.is_ascii_alphanumeric() || c == '.') {
+    if !criterion
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '.')
+    {
         return Err("CRITERION_ID contains invalid characters".into());
     }
 
@@ -33,9 +36,15 @@ pub fn run_control_attest() -> Result<i32, String> {
     let dir = std::path::Path::new("evidence/attestations");
     std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     let date = crate::util::utc_date("%F");
-    let path = dir.join(format!("{}-{date}.json", body["criterion"].as_str().unwrap()));
-    std::fs::write(&path, serde_json::to_string_pretty(&body).map_err(|e| e.to_string())?)
-        .map_err(|e| e.to_string())?;
+    let path = dir.join(format!(
+        "{}-{date}.json",
+        body["criterion"].as_str().unwrap()
+    ));
+    std::fs::write(
+        &path,
+        serde_json::to_string_pretty(&body).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
     println!("recorded {}", path.display());
     Ok(0)
 }
@@ -44,7 +53,11 @@ pub fn run_control_attest() -> Result<i32, String> {
 mod tests {
     #[test]
     fn criterion_filename_alphabet_is_path_safe() {
-        assert!("CC6.4".chars().all(|c| c.is_ascii_alphanumeric() || c == '.'));
-        assert!(!"../../secret".chars().all(|c| c.is_ascii_alphanumeric() || c == '.'));
+        assert!("CC6.4"
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '.'));
+        assert!(!"../../secret"
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '.'));
     }
 }
