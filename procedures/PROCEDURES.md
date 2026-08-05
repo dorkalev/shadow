@@ -18,16 +18,16 @@ Format contract: the website seeder parses the tables below. Columns: ID | Name 
 
 | ID | Name | Category | Criteria served | Install | Detect |
 |---|---|---|---|---|---|
-| branch-rulesets | Rulesets on main (no direct push, no force) and staging (PR + required checks) | repo-gates | CC8.1, CC6.3 | runbook 02 §2 | `gh api /repos/{org}/{repo}/rulesets` contains both, checks still required |
-| staging-topology | staging branch exists; main default; ff-only release path | repo-gates | CC8.1 | runbook 02 §2 | branch list + ruleset |
+| branch-rulesets | Rulesets on main (PR + required checks, no force/deletion) and compliance-archives (no force/deletion) | repo-gates | CC8.1, CC6.3 | runbook 02 §2 | `gh api /repos/{org}/{repo}/rulesets` contains both and required checks remain enforced |
+| main-topology | main is the sole production trunk; all normal change PRs target it | repo-gates | CC8.1 | runbook 02 §2 | default branch + recent PR bases + ruleset |
 | pr-template | PR template: Summary / Tickets / Changes / Test Plan | repo-gates | CC8.1 | runbook 02 §3 | `.github/pull_request_template.md` exists with 4 sections |
 | ci-tests | CI build + test workflow on PR | repo-gates | CC8.1 | runbook 02 §3 | workflow file + recent green runs on PRs |
 | compliance-audit-agent | Compliance audit check (awaiting-review phase, `shadow-ci check`) | agents | CC8.1, CC4.1 | runbook 02 §3 | `compliance.yml` workflow + `shadow-ci:audit` comment on latest PR |
 | compliance-review-gate | Review gate check (post-review phase, required reviewer + findings gate) | agents | CC8.1, CC4.1 | runbook 02 §3 | `compliance.yml` workflow + `compliance-review-gate` required context in ruleset |
-| review-bot | Independent reviewer: built-in shadow-reviewer (review.yml, LLM) or a third-party review-bot app | agents | CC8.1 | review.yml (day one) / bot app (upgrade) | shadow-review marker or bot review present on sampled recent PRs |
+| review-bot | Optional semantic adviser: built-in shadow-reviewer (review.yml, LLM) or a third-party bot | agents | CC8.1 | review.yml / bot app (optional) | completed marker or bot review present when the control is enabled |
 | post-merge-archive | Post-merge archive → compliance-archives branch (JSON+MD per PR) | evidence | CC8.1, CC4.1, CC2.1 | runbook 02 §3 | workflow file + archive record for every merged PR since install |
 | bypass-detection | Bypass-merge detection against live branch ruleset (+ Slack alert) | evidence | CC8.1, CC4.1 | runbook 02 §3 | `bypass_merge` block present in latest archive records |
-| archives-branch | compliance-archives orphan branch (append-only evidence) | evidence | CC8.1 | runbook 02 §2 | branch exists with README |
+| archives-branch | protected compliance-archives branch (new evidence records; no force/deletion) | evidence | CC8.1 | runbook 02 §2 | branch exists with protective ruleset and README |
 
 ## Scanners
 
@@ -47,8 +47,8 @@ Format contract: the website seeder parses the tables below. Columns: ID | Name 
 | access-register | access-register.md (people × systems × roles) | paper | CC6.2, CC6.3 | runbook 02 §5 | file exists; matches live member lists |
 | onboard-offboard | Onboarding + offboarding runbooks with checklist tickets | paper | CC6.2, CC1.4 | runbook 02 §5 | runbook files exist; ticket per join/leave |
 | incident-runbook | Incident response runbook | paper | CC7.3–CC7.5 | runbook 02 §5 | runbook file exists; incidents have tickets + postmortems |
-| hotfix-runbook | Hotfix procedure: documented direct-push path (incident ticket + backport PR through normal gates) | paper | CC8.1, CC7.4 | runbook 02 §5 | `runbooks/hotfix.md` exists; every bypass merge has a linked incident ticket + backport PR |
-| ai-policy | AI Development & Agent Use Policy (agent identities, no self-approval, prompt-on-ticket) | paper | CC8.1, CC6.3, CC9.2 | runbook 02 §5 | policy file exists, attested |
+| hotfix-runbook | Hotfix procedure: documented emergency bypass (incident ticket + remediation PR through normal gates) | paper | CC8.1, CC7.4 | runbook 02 §5 | `runbooks/hotfix.md` exists; every bypass has a linked incident ticket + remediation PR |
+| ai-policy | AI Development & Agent Use Policy (machine identities disclosed, no AI counted as a person, prompt-on-ticket) | paper | CC8.1, CC6.3, CC9.2 | runbook 02 §5 | policy file exists, attested |
 
 ## Monitoring & cloud
 

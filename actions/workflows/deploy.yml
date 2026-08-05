@@ -24,6 +24,7 @@ concurrency:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    environment: production
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -42,16 +43,19 @@ jobs:
           gcloud auth configure-docker "${{ vars.GCP_REGION }}-docker.pkg.dev" --quiet
           docker build -t "$IMAGE" .
           docker push "$IMAGE"
-          echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
+          DIGEST="$(gcloud artifacts docker images describe "$IMAGE" --format='value(image_summary.digest)')"
+          test -n "$DIGEST"
+          IMAGE_DIGEST="${IMAGE%:*}@$DIGEST"
+          echo "IMAGE_DIGEST=$IMAGE_DIGEST" >> "$GITHUB_ENV"
 
       - name: Deploy to Cloud Run
         run: |
           gcloud run deploy "${{ vars.GCP_SERVICE }}" \
             --project "${{ vars.GCP_PROJECT_ID }}" \
-            --image "$IMAGE" \
+            --image "$IMAGE_DIGEST" \
             --region "${{ vars.GCP_REGION }}" \
             --quiet
 
       - name: Record deploy in the run summary
         run: |
-          echo "Deployed \`$IMAGE\` from \`${GITHUB_SHA}\` (run ${{ github.run_id }})" >> "$GITHUB_STEP_SUMMARY"
+          echo "Deployed \`$IMAGE_DIGEST\` from \`${GITHUB_SHA}\` (run ${{ github.run_id }})" >> "$GITHUB_STEP_SUMMARY"

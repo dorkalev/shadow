@@ -127,62 +127,111 @@ fn api_array(
 }
 
 fn branch_protection(repo: &str, branch: &str, observed_at: &str) -> Value {
-    let endpoint = format!("repos/{repo}/branches/{branch}/protection");
-    match gh_json(&["api", &endpoint]) {
-        Ok(_) => observation(
-            &format!("github.branch_protection.{branch}"),
-            Some("branch-rulesets"),
-            &["CC8.1", "CC6.3"],
-            "technical",
-            Verdict::Pass,
-            "branch protection endpoint is configured",
-            format!("github:{endpoint}"),
-            observed_at,
-        ),
-        Err(e) if e.contains("HTTP 404") => observation(
-            &format!("github.branch_protection.{branch}"),
-            Some("branch-rulesets"),
-            &["CC8.1", "CC6.3"],
-            "technical",
-            Verdict::Fail,
-            "branch is not protected",
-            format!("github:{endpoint}"),
-            observed_at,
-        ),
-        Err(e) => observation(
+    let classic_endpoint = format!("repos/{repo}/branches/{branch}/protection");
+    let rules_endpoint = format!("repos/{repo}/rules/branches/{branch}");
+    let classic = gh_json(&["api", &classic_endpoint]);
+    let rules = gh_json(&["api", &rules_endpoint]);
+    let classic_not_found = classic
+        .as_ref()
+        .is_err_and(|e| e.contains("404") || e.contains("Not Found"));
+    let rules_not_found = rules
+        .as_ref()
+        .is_err_and(|e| e.contains("404") || e.contains("Not Found"));
+    if classic.is_err() && !classic_not_found || rules.is_err() && !rules_not_found {
+        return observation(
             &format!("github.branch_protection.{branch}"),
             Some("branch-rulesets"),
             &["CC8.1", "CC6.3"],
             "technical",
             Verdict::Unknown,
-            format!("could not query live API: {e}"),
-            format!("github:{endpoint}"),
+            format!(
+                "could not query all protection layers: classic={:?}; rules={:?}",
+                classic.as_ref().err(),
+                rules.as_ref().err()
+            ),
+            format!("github:{classic_endpoint};github:{rules_endpoint}"),
             observed_at,
-        ),
+        );
     }
+
+    let rule_types: BTreeSet<&str> = rules
+        .as_ref()
+        .ok()
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|r| r["type"].as_str())
+        .collect();
+    let classic_value = classic.as_ref().ok();
+    let has_pr = classic_value.is_some_and(|v| !v["required_pull_request_reviews"].is_null())
+        || rule_types.contains("pull_request");
+    let has_checks = classic_value.is_some_and(|v| {
+        v["required_status_checks"]["contexts"]
+            .as_array()
+            .is_some_and(|a| !a.is_empty())
+            || v["required_status_checks"]["checks"]
+                .as_array()
+                .is_some_and(|a| !a.is_empty())
+    }) || rule_types.contains("required_status_checks");
+    let blocks_force = classic_value
+        .is_some_and(|v| v["allow_force_pushes"]["enabled"].as_bool() != Some(true))
+        || rule_types.contains("non_fast_forward");
+    let blocks_delete = classic_value
+        .is_some_and(|v| v["allow_deletions"]["enabled"].as_bool() != Some(true))
+        || rule_types.contains("deletion");
+    let archival = branch == "compliance-archives";
+    let protected = blocks_force && blocks_delete && (archival || has_pr && has_checks);
+    let evidence = format!(
+        "pull_request={has_pr}, required_checks={has_checks}, force_push_blocked={blocks_force}, deletion_blocked={blocks_delete}"
+    );
+    observation(
+        &format!("github.branch_protection.{branch}"),
+        Some("branch-rulesets"),
+        &["CC8.1", "CC6.3", "CC2.1"],
+        "technical",
+        if protected {
+            Verdict::Pass
+        } else {
+            Verdict::Fail
+        },
+        evidence,
+        format!("github:{classic_endpoint};github:{rules_endpoint}"),
+        observed_at,
+    )
 }
 
 fn first_existing(root: &Path, paths: &[&str]) -> Option<PathBuf> {
     paths.iter().map(|p| root.join(p)).find(|p| p.is_file())
 }
 
-fn any_under(root: &Path, relative: &str, needle: &str) -> bool {
-    fn walk(dir: &Path, needle: &str) -> bool {
-        let Ok(entries) = std::fs::read_dir(dir) else { return false };
+fn complete_artifact_under(root: &Path, relative: &str, needle: &str) -> Option<PathBuf> {
+    fn walk(dir: &Path, needle: &str) -> Option<PathBuf> {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return None;
+        };
         for entry in entries.flatten() {
             let path = entry.path();
-            if path
+            let name_matches = path
                 .file_name()
                 .and_then(|n| n.to_str())
-                .is_some_and(|n| n.to_lowercase().contains(needle))
-            {
-                return true;
+                .is_some_and(|n| n.to_lowercase().contains(needle));
+            if path.is_file() && name_matches {
+                let body = std::fs::read_to_string(&path).unwrap_or_default();
+                let lower = body.to_lowercase();
+                if body.trim().len() >= 80
+                    && !lower.contains("template — awaiting")
+                    && !lower.contains("_pending_")
+                {
+                    return Some(path);
+                }
             }
-            if path.is_dir() && walk(&path, needle) {
-                return true;
+            if path.is_dir() {
+                if let Some(found) = walk(&path, needle) {
+                    return Some(found);
+                }
             }
         }
-        false
+        None
     }
     walk(&root.join(relative), &needle.to_lowercase())
 }
@@ -207,7 +256,10 @@ fn attestation_observations(root: &Path, observed_at: &str) -> Vec<Value> {
         let Some(criterion) = value["criterion"].as_str() else {
             continue;
         };
-        let attested_at = value["attested_at"].as_str().unwrap_or_default().to_string();
+        let attested_at = value["attested_at"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
         let replace = latest
             .get(criterion)
             .map_or(true, |(current, _, _)| attested_at > *current);
@@ -276,7 +328,7 @@ fn file_check(
     }
 }
 
-fn approved_document_check(
+fn control_document_check(
     root: &Path,
     id: &str,
     procedure: Option<&str>,
@@ -303,9 +355,18 @@ fn approved_document_check(
         procedure,
         criteria,
         "design",
-        if problem.is_none() { Verdict::Pass } else { Verdict::Fail },
+        if problem.is_none() {
+            Verdict::Pass
+        } else {
+            Verdict::Fail
+        },
         problem.map_or_else(
-            || format!("approved control document is present: {}", path.display()),
+            || {
+                format!(
+                    "substantive control document is present; approval is evaluated separately: {}",
+                    path.display()
+                )
+            },
             |reason| format!("{} {reason}", path.display()),
         ),
         format!("repo:{}", path.display()),
@@ -315,7 +376,14 @@ fn approved_document_check(
 
 fn document_problem(body: &str) -> Option<String> {
     let upper = body.to_uppercase();
-    let placeholders = ["TODO", "TBD", "OPEN —", "PLACEHOLDER", "REPLACE_ME", "DRAFT —"];
+    let placeholders = [
+        "TODO",
+        "TBD",
+        "OPEN —",
+        "PLACEHOLDER",
+        "REPLACE_ME",
+        "DRAFT —",
+    ];
     if let Some(marker) = placeholders.iter().find(|p| upper.contains(*p)) {
         Some(format!("still contains placeholder marker {marker}"))
     } else if body.trim().len() < 80 {
@@ -353,7 +421,10 @@ fn file_contains_check(
             criteria,
             "design",
             Verdict::Fail,
-            format!("{path} is missing one or more required sections: {}", required.join(", ")),
+            format!(
+                "{path} is missing one or more required sections: {}",
+                required.join(", ")
+            ),
             format!("repo:{path}"),
             observed_at,
         ),
@@ -376,16 +447,19 @@ fn firestore_rules_check(root: &Path, observed_at: &str) -> Value {
         Ok(body)
             if body.contains("rules_version")
                 && !body.contains("allow read, write: if true")
-                && !body.contains("allow read: if true") => observation(
-            "firebase.firestore_rules",
-            None,
-            &["CC6.1", "CC6.3", "C1.1"],
-            "design",
-            Verdict::Pass,
-            "Firestore rules are versioned and do not contain an unconditional allow",
-            "repo:firestore.rules",
-            observed_at,
-        ),
+                && !body.contains("allow read: if true") =>
+        {
+            observation(
+                "firebase.firestore_rules",
+                None,
+                &["CC6.1", "CC6.3", "C1.1"],
+                "design",
+                Verdict::Pass,
+                "Firestore rules are versioned and do not contain an unconditional allow",
+                "repo:firestore.rules",
+                observed_at,
+            )
+        }
         Ok(_) => observation(
             "firebase.firestore_rules",
             None,
@@ -467,20 +541,43 @@ fn gcp_observations(projects: &[String], observed_at: &str) -> Vec<Value> {
 
     let mut out = Vec::new();
     for project in projects {
-        let db = run("gcloud", &["firestore", "databases", "describe", "--project", project, "--format=json"]);
+        let db = run(
+            "gcloud",
+            &[
+                "firestore",
+                "databases",
+                "describe",
+                "--project",
+                project,
+                "--format=json",
+            ],
+        );
         let pitr_pass = db
             .as_ref()
             .ok()
             .and_then(|s| serde_json::from_str::<Value>(s).ok())
-            .and_then(|v| v["pointInTimeRecoveryEnablement"].as_str().map(str::to_owned))
+            .and_then(|v| {
+                v["pointInTimeRecoveryEnablement"]
+                    .as_str()
+                    .map(str::to_owned)
+            })
             .is_some_and(|v| v.contains("ENABLED"));
         out.push(observation(
             &format!("gcp.firestore_pitr.{project}"),
             Some("backups-pitr"),
             &["A1.2"],
             "technical",
-            if pitr_pass { Verdict::Pass } else if db.is_ok() { Verdict::Fail } else { Verdict::Unknown },
-            db.as_ref().err().cloned().unwrap_or_else(|| format!("Firestore PITR enabled={pitr_pass}")),
+            if pitr_pass {
+                Verdict::Pass
+            } else if db.is_ok() {
+                Verdict::Fail
+            } else {
+                Verdict::Unknown
+            },
+            db.as_ref()
+                .err()
+                .cloned()
+                .unwrap_or_else(|| format!("Firestore PITR enabled={pitr_pass}")),
             format!("gcp:{project}:firestore"),
             observed_at,
         ));
@@ -496,22 +593,47 @@ fn gcp_observations(projects: &[String], observed_at: &str) -> Vec<Value> {
             Some("backups-pitr"),
             &["A1.2"],
             "technical",
-            if delete_protected { Verdict::Pass } else if db.is_ok() { Verdict::Fail } else { Verdict::Unknown },
+            if delete_protected {
+                Verdict::Pass
+            } else if db.is_ok() {
+                Verdict::Fail
+            } else {
+                Verdict::Unknown
+            },
             format!("Firestore delete protection enabled={delete_protected}"),
             format!("gcp:{project}:firestore"),
             observed_at,
         ));
 
-        let uptime = run("gcloud", &["monitoring", "uptime", "list-configs", "--project", project, "--format=json"]);
-        let uptime_count = uptime.as_ref().ok().and_then(|s| serde_json::from_str::<Value>(s).ok())
+        let uptime = run(
+            "gcloud",
+            &[
+                "monitoring",
+                "uptime",
+                "list-configs",
+                "--project",
+                project,
+                "--format=json",
+            ],
+        );
+        let uptime_count = uptime
+            .as_ref()
+            .ok()
+            .and_then(|s| serde_json::from_str::<Value>(s).ok())
             .and_then(|v| v.as_array().map(Vec::len));
         out.push(observation(
             &format!("gcp.uptime_alerting.{project}"),
             Some("uptime-alerting"),
             &["CC7.2", "A1.1"],
             "technical",
-            match uptime_count { Some(n) if n > 0 => Verdict::Pass, Some(_) => Verdict::Fail, None => Verdict::Unknown },
-            uptime.as_ref().err().cloned().unwrap_or_else(|| format!("{} uptime configuration(s)", uptime_count.unwrap_or(0))),
+            match uptime_count {
+                Some(n) if n > 0 => Verdict::Pass,
+                Some(_) => Verdict::Fail,
+                None => Verdict::Unknown,
+            },
+            uptime.as_ref().err().cloned().unwrap_or_else(|| {
+                format!("{} uptime configuration(s)", uptime_count.unwrap_or(0))
+            }),
             format!("gcp:{project}:monitoring"),
             observed_at,
         ));
@@ -538,13 +660,25 @@ fn gcp_observations(projects: &[String], observed_at: &str) -> Vec<Value> {
             Some("audit-logging"),
             &["CC7.2", "CC2.1"],
             "technical",
-            match audit_count { Some(n) if n > 0 => Verdict::Pass, Some(_) => Verdict::Unknown, None => Verdict::Unknown },
-            audit.as_ref().err().cloned().unwrap_or_else(|| format!("{0} recent Cloud Audit Log record(s) sampled", audit_count.unwrap_or(0))),
+            match audit_count {
+                Some(n) if n > 0 => Verdict::Pass,
+                Some(_) => Verdict::Unknown,
+                None => Verdict::Unknown,
+            },
+            audit.as_ref().err().cloned().unwrap_or_else(|| {
+                format!(
+                    "{0} recent Cloud Audit Log record(s) sampled",
+                    audit_count.unwrap_or(0)
+                )
+            }),
             format!("gcp:{project}:logging"),
             observed_at,
         ));
 
-        let iam = run("gcloud", &["projects", "get-iam-policy", project, "--format=json"]);
+        let iam = run(
+            "gcloud",
+            &["projects", "get-iam-policy", project, "--format=json"],
+        );
         let risky: Option<Vec<String>> = iam
             .as_ref()
             .ok()
@@ -570,8 +704,17 @@ fn gcp_observations(projects: &[String], observed_at: &str) -> Vec<Value> {
             Some("access-register"),
             &["CC6.2", "CC6.3"],
             "technical",
-            match risky.as_ref() { Some(items) if items.is_empty() => Verdict::Pass, Some(_) => Verdict::Fail, None => Verdict::Unknown },
-            iam.as_ref().err().cloned().unwrap_or_else(|| format!("{} primitive owner/editor binding(s)", risky.as_ref().map(Vec::len).unwrap_or(0))),
+            match risky.as_ref() {
+                Some(items) if items.is_empty() => Verdict::Pass,
+                Some(_) => Verdict::Fail,
+                None => Verdict::Unknown,
+            },
+            iam.as_ref().err().cloned().unwrap_or_else(|| {
+                format!(
+                    "{} primitive owner/editor binding(s)",
+                    risky.as_ref().map(Vec::len).unwrap_or(0)
+                )
+            }),
             format!("gcp:{project}:iam"),
             observed_at,
         ));
@@ -607,8 +750,15 @@ fn summary(checks: &[Value]) -> Value {
         .into_iter()
         .map(|(name, (pass, fail, unknown))| {
             let denominator = pass + fail + unknown;
-            let percent = if denominator == 0 { 0.0 } else { pass as f64 * 100.0 / denominator as f64 };
-            (name, json!({"pass": pass, "fail": fail, "unknown": unknown, "percent": percent}))
+            let percent = if denominator == 0 {
+                0.0
+            } else {
+                pass as f64 * 100.0 / denominator as f64
+            };
+            (
+                name,
+                json!({"pass": pass, "fail": fail, "unknown": unknown, "percent": percent}),
+            )
         })
         .collect();
     json!({
@@ -619,82 +769,465 @@ fn summary(checks: &[Value]) -> Value {
 }
 
 pub fn run_verify() -> Result<i32, String> {
-    let repo = std::env::var("REPO").or_else(|_| std::env::var("GITHUB_REPOSITORY"))
+    let repo = std::env::var("REPO")
+        .or_else(|_| std::env::var("GITHUB_REPOSITORY"))
         .map_err(|_| "REPO or GITHUB_REPOSITORY is required".to_string())?;
     let root = PathBuf::from(std::env::var("SHADOW_ROOT").unwrap_or_else(|_| ".".into()));
     let (owner, _) = repo.split_once('/').ok_or("REPO must be owner/name")?;
-    let branches = std::env::var("SHADOW_BRANCHES").unwrap_or_else(|_| "main,staging".into());
-    let gcp_projects: Vec<String> = std::env::var("GCP_PROJECTS").unwrap_or_default()
-        .split(',').map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned).collect();
+    let branches = std::env::var("SHADOW_BRANCHES").unwrap_or_else(|_| "main".into());
+    let gcp_projects: Vec<String> = std::env::var("GCP_PROJECTS")
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
+        .collect();
     let observed_at = crate::util::utc_date("%Y-%m-%dT%H:%M:%SZ");
     let mut checks = Vec::new();
 
     let repo_info = gh_json(&["api", &format!("repos/{repo}")]);
-    let owner_type = repo_info.as_ref().ok().and_then(|v| v["owner"]["type"].as_str());
+    let owner_type = repo_info
+        .as_ref()
+        .ok()
+        .and_then(|v| v["owner"]["type"].as_str());
     checks.push(match owner_type {
         Some("Organization") => match gh_json(&["api", &format!("orgs/{owner}")]) {
-            Ok(v) if v["two_factor_requirement_enabled"].as_bool() == Some(true) => observation("github.org_2fa_required", Some("org-2fa"), &["CC6.1", "CC6.2"], "technical", Verdict::Pass, "organization requires 2FA", format!("github:orgs/{owner}"), &observed_at),
-            Ok(_) => observation("github.org_2fa_required", Some("org-2fa"), &["CC6.1", "CC6.2"], "technical", Verdict::Fail, "organization does not require 2FA", format!("github:orgs/{owner}"), &observed_at),
-            Err(e) => observation("github.org_2fa_required", Some("org-2fa"), &["CC6.1", "CC6.2"], "technical", Verdict::Unknown, e, format!("github:orgs/{owner}"), &observed_at),
+            Ok(v) if v["two_factor_requirement_enabled"].as_bool() == Some(true) => observation(
+                "github.org_2fa_required",
+                Some("org-2fa"),
+                &["CC6.1", "CC6.2"],
+                "technical",
+                Verdict::Pass,
+                "organization requires 2FA",
+                format!("github:orgs/{owner}"),
+                &observed_at,
+            ),
+            Ok(_) => observation(
+                "github.org_2fa_required",
+                Some("org-2fa"),
+                &["CC6.1", "CC6.2"],
+                "technical",
+                Verdict::Fail,
+                "organization does not require 2FA",
+                format!("github:orgs/{owner}"),
+                &observed_at,
+            ),
+            Err(e) => observation(
+                "github.org_2fa_required",
+                Some("org-2fa"),
+                &["CC6.1", "CC6.2"],
+                "technical",
+                Verdict::Unknown,
+                e,
+                format!("github:orgs/{owner}"),
+                &observed_at,
+            ),
         },
-        Some("User") => observation("github.org_2fa_required", Some("org-2fa"), &["CC6.1", "CC6.2"], "technical", Verdict::NotApplicable, "repository is user-owned; account MFA requires attestation", format!("github:repos/{repo}"), &observed_at),
-        _ => observation("github.org_2fa_required", Some("org-2fa"), &["CC6.1", "CC6.2"], "technical", Verdict::Unknown, "could not determine owner type", format!("github:repos/{repo}"), &observed_at),
+        Some("User") => observation(
+            "github.org_2fa_required",
+            Some("org-2fa"),
+            &["CC6.1", "CC6.2"],
+            "technical",
+            Verdict::NotApplicable,
+            "repository is user-owned; account MFA requires attestation",
+            format!("github:repos/{repo}"),
+            &observed_at,
+        ),
+        _ => observation(
+            "github.org_2fa_required",
+            Some("org-2fa"),
+            &["CC6.1", "CC6.2"],
+            "technical",
+            Verdict::Unknown,
+            "could not determine owner type",
+            format!("github:repos/{repo}"),
+            &observed_at,
+        ),
     });
 
     for branch in branches.split(',').map(str::trim).filter(|b| !b.is_empty()) {
         checks.push(branch_protection(&repo, branch, &observed_at));
     }
-    checks.push(api_array("github.open_dependabot_alerts", "dependabot", &["CC7.1"], gh_json(&["api", &format!("repos/{repo}/dependabot/alerts?state=open&per_page=100")]), &format!("github:repos/{repo}/dependabot/alerts"), &observed_at));
-    checks.push(api_array("github.open_code_scanning_alerts", "codeql", &["CC7.1"], gh_json(&["api", &format!("repos/{repo}/code-scanning/alerts?state=open&per_page=100")]), &format!("github:repos/{repo}/code-scanning/alerts"), &observed_at));
-    checks.push(api_array("github.open_secret_scanning_alerts", "secret-scanning", &["CC6.1", "CC7.1"], gh_json(&["api", &format!("repos/{repo}/secret-scanning/alerts?state=open&per_page=100")]), &format!("github:repos/{repo}/secret-scanning/alerts"), &observed_at));
+    checks.push(branch_protection(
+        &repo,
+        "compliance-archives",
+        &observed_at,
+    ));
+    checks.push(api_array(
+        "github.open_dependabot_alerts",
+        "dependabot",
+        &["CC7.1"],
+        gh_json(&[
+            "api",
+            &format!("repos/{repo}/dependabot/alerts?state=open&per_page=100"),
+        ]),
+        &format!("github:repos/{repo}/dependabot/alerts"),
+        &observed_at,
+    ));
+    checks.push(api_array(
+        "github.open_code_scanning_alerts",
+        "codeql",
+        &["CC7.1"],
+        gh_json(&[
+            "api",
+            &format!("repos/{repo}/code-scanning/alerts?state=open&per_page=100"),
+        ]),
+        &format!("github:repos/{repo}/code-scanning/alerts"),
+        &observed_at,
+    ));
+    checks.push(api_array(
+        "github.open_secret_scanning_alerts",
+        "secret-scanning",
+        &["CC6.1", "CC7.1"],
+        gh_json(&[
+            "api",
+            &format!("repos/{repo}/secret-scanning/alerts?state=open&per_page=100"),
+        ]),
+        &format!("github:repos/{repo}/secret-scanning/alerts"),
+        &observed_at,
+    ));
 
-    checks.push(file_contains_check(&root, "repo.pr_template", "pr-template", &["CC8.1"], ".github/pull_request_template.md", &["Summary", "Tickets", "Changes", "Test Plan"], &observed_at));
-    checks.push(file_check(&root, "repo.ci_workflow", Some("ci-tests"), &["CC8.1"], &[".github/workflows/ci.yml", ".github/workflows/test.yml"], &observed_at));
-    checks.push(file_check(&root, "repo.compliance_gate", Some("compliance-audit-agent"), &["CC8.1", "CC4.1"], &[".github/workflows/compliance.yml"], &observed_at));
-    checks.push(file_check(&root, "repo.review_gate", Some("compliance-review-gate"), &["CC8.1", "CC4.1"], &[".github/workflows/review.yml"], &observed_at));
-    checks.push(file_check(&root, "repo.post_merge_archive", Some("post-merge-archive"), &["CC8.1", "CC4.1", "CC2.1"], &[".github/workflows/post-merge-archive.yml"], &observed_at));
-    checks.push(file_check(&root, "repo.daily_verify", Some("daily-verify"), &["CC4.1"], &[".github/workflows/deterministic-verify.yml", ".github/workflows/deterministic-dashboard.yml"], &observed_at));
-    checks.push(file_check(&root, "repo.quarterly_rituals", Some("quarterly-access-review"), &["CC6.2", "CC6.3", "CC1.2", "CC4.2"], &[".github/workflows/quarterly-rituals.yml"], &observed_at));
+    checks.push(file_contains_check(
+        &root,
+        "repo.pr_template",
+        "pr-template",
+        &["CC8.1"],
+        ".github/pull_request_template.md",
+        &["Summary", "Tickets", "Changes", "Test Plan"],
+        &observed_at,
+    ));
+    checks.push(file_check(
+        &root,
+        "repo.ci_workflow",
+        Some("ci-tests"),
+        &["CC8.1"],
+        &[".github/workflows/ci.yml", ".github/workflows/test.yml"],
+        &observed_at,
+    ));
+    checks.push(file_check(
+        &root,
+        "repo.compliance_gate",
+        Some("compliance-audit-agent"),
+        &["CC8.1", "CC4.1"],
+        &[".github/workflows/compliance.yml"],
+        &observed_at,
+    ));
+    checks.push(file_check(
+        &root,
+        "repo.review_gate",
+        Some("compliance-review-gate"),
+        &["CC8.1", "CC4.1"],
+        &[".github/workflows/review.yml"],
+        &observed_at,
+    ));
+    checks.push(file_check(
+        &root,
+        "repo.post_merge_archive",
+        Some("post-merge-archive"),
+        &["CC8.1", "CC4.1", "CC2.1"],
+        &[".github/workflows/post-merge-archive.yml"],
+        &observed_at,
+    ));
+    checks.push(file_check(
+        &root,
+        "repo.daily_verify",
+        Some("daily-verify"),
+        &["CC4.1"],
+        &[
+            ".github/workflows/deterministic-verify.yml",
+            ".github/workflows/deterministic-dashboard.yml",
+        ],
+        &observed_at,
+    ));
+    checks.push(file_check(
+        &root,
+        "repo.quarterly_rituals",
+        Some("quarterly-access-review"),
+        &["CC6.2", "CC6.3", "CC1.2", "CC4.2"],
+        &[".github/workflows/quarterly-rituals.yml"],
+        &observed_at,
+    ));
 
-    checks.push(approved_document_check(&root, "evidence.policy_canon", Some("policies-repo"), &["CC5.3", "CC1.1", "CC2.2"], &["policies/README.md", ".shadow/policies/README.md"], &observed_at));
-    checks.push(approved_document_check(&root, "evidence.risk_register", Some("risk-register"), &["CC3.1", "CC3.2", "CC3.3", "CC3.4", "CC9.1"], &["policies/risk-register.md", "compliance/risk-register.md", "risk-register.md"], &observed_at));
-    checks.push(approved_document_check(&root, "evidence.vendor_register", Some("vendor-register"), &["CC9.2", "P6.4", "P6.5"], &["policies/vendor-register.md", "compliance/vendor-register.md", "vendor-register.md"], &observed_at));
-    checks.push(approved_document_check(&root, "evidence.access_register", Some("access-register"), &["CC6.2", "CC6.3"], &["policies/access-register.md", "compliance/access-register.md", "access-register.md"], &observed_at));
-    checks.push(approved_document_check(&root, "repo.onboarding_runbook", Some("onboard-offboard"), &["CC6.2", "CC1.4"], &["runbooks/onboarding.md", "policies/onboarding-offboarding.md"], &observed_at));
-    checks.push(approved_document_check(&root, "repo.offboarding_runbook", Some("onboard-offboard"), &["CC6.2", "CC1.4"], &["runbooks/offboarding.md", "policies/onboarding-offboarding.md"], &observed_at));
-    checks.push(approved_document_check(&root, "repo.incident_runbook", Some("incident-runbook"), &["CC7.3", "CC7.4", "CC7.5"], &["runbooks/incident-response.md", "policies/incident-response.md"], &observed_at));
-    checks.push(approved_document_check(&root, "repo.hotfix_runbook", Some("hotfix-runbook"), &["CC8.1", "CC7.4"], &["runbooks/hotfix.md", "policies/runbooks/hotfix.md"], &observed_at));
-    checks.push(approved_document_check(&root, "repo.ai_policy", Some("ai-policy"), &["CC8.1", "CC6.3", "CC9.2"], &["policies/ai-agent-use.md", "policies/ai-development.md"], &observed_at));
-    checks.push(approved_document_check(&root, "evidence.system_description", None, &["CC2.1", "CC2.2", "CC2.3"], &["SYSTEM-DESCRIPTION.md", "docs/system-description.md"], &observed_at));
-    checks.push(approved_document_check(&root, "evidence.data_inventory", None, &["C1.1", "P3.1", "P4.1"], &["compliance/data-inventory.yaml", "compliance/data-inventory.yml", "docs/data-inventory.md"], &observed_at));
-    checks.push(approved_document_check(&root, "evidence.privacy_notice", None, &["P1.1", "P2.1"], &["app/PRIVACY-NOTICE.md", "PRIVACY.md", "docs/privacy-notice.md"], &observed_at));
-    checks.push(file_check(&root, "repo.privacy_tests", None, &["P2.1", "P3.1", "P3.2", "P4.2", "P4.3", "P5.1", "P5.2", "PI1.2", "PI1.4", "PI1.5"], &["app/test/privacy.test.ts", "test/privacy.test.ts"], &observed_at));
+    checks.push(control_document_check(
+        &root,
+        "evidence.policy_canon",
+        Some("policies-repo"),
+        &["CC5.3", "CC1.1", "CC2.2"],
+        &["policies/README.md", ".shadow/policies/README.md"],
+        &observed_at,
+    ));
+    checks.push(control_document_check(
+        &root,
+        "evidence.risk_register",
+        Some("risk-register"),
+        &["CC3.1", "CC3.2", "CC3.3", "CC3.4", "CC9.1"],
+        &[
+            "policies/risk-register.md",
+            "compliance/risk-register.md",
+            "risk-register.md",
+        ],
+        &observed_at,
+    ));
+    checks.push(control_document_check(
+        &root,
+        "evidence.vendor_register",
+        Some("vendor-register"),
+        &["CC9.2", "P6.4", "P6.5"],
+        &[
+            "policies/vendor-register.md",
+            "compliance/vendor-register.md",
+            "vendor-register.md",
+        ],
+        &observed_at,
+    ));
+    checks.push(control_document_check(
+        &root,
+        "evidence.access_register",
+        Some("access-register"),
+        &["CC6.2", "CC6.3"],
+        &[
+            "policies/access-register.md",
+            "compliance/access-register.md",
+            "access-register.md",
+        ],
+        &observed_at,
+    ));
+    checks.push(control_document_check(
+        &root,
+        "repo.onboarding_runbook",
+        Some("onboard-offboard"),
+        &["CC6.2", "CC1.4"],
+        &[
+            "runbooks/onboarding.md",
+            "policies/onboarding-offboarding.md",
+        ],
+        &observed_at,
+    ));
+    checks.push(control_document_check(
+        &root,
+        "repo.offboarding_runbook",
+        Some("onboard-offboard"),
+        &["CC6.2", "CC1.4"],
+        &[
+            "runbooks/offboarding.md",
+            "policies/onboarding-offboarding.md",
+        ],
+        &observed_at,
+    ));
+    checks.push(control_document_check(
+        &root,
+        "repo.incident_runbook",
+        Some("incident-runbook"),
+        &["CC7.3", "CC7.4", "CC7.5"],
+        &[
+            "runbooks/incident-response.md",
+            "policies/incident-response.md",
+        ],
+        &observed_at,
+    ));
+    checks.push(control_document_check(
+        &root,
+        "repo.hotfix_runbook",
+        Some("hotfix-runbook"),
+        &["CC8.1", "CC7.4"],
+        &["runbooks/hotfix.md", "policies/runbooks/hotfix.md"],
+        &observed_at,
+    ));
+    checks.push(control_document_check(
+        &root,
+        "repo.ai_policy",
+        Some("ai-policy"),
+        &["CC8.1", "CC6.3", "CC9.2"],
+        &["policies/ai-agent-use.md", "policies/ai-development.md"],
+        &observed_at,
+    ));
+    checks.push(control_document_check(
+        &root,
+        "evidence.system_description",
+        None,
+        &["CC2.1", "CC2.2", "CC2.3"],
+        &["SYSTEM-DESCRIPTION.md", "docs/system-description.md"],
+        &observed_at,
+    ));
+    checks.push(control_document_check(
+        &root,
+        "evidence.data_inventory",
+        None,
+        &["C1.1", "P3.1", "P4.1"],
+        &[
+            "compliance/data-inventory.yaml",
+            "compliance/data-inventory.yml",
+            "docs/data-inventory.md",
+        ],
+        &observed_at,
+    ));
+    checks.push(control_document_check(
+        &root,
+        "evidence.privacy_notice",
+        None,
+        &["P1.1", "P2.1"],
+        &[
+            "app/PRIVACY-NOTICE.md",
+            "PRIVACY.md",
+            "docs/privacy-notice.md",
+        ],
+        &observed_at,
+    ));
+    checks.push(file_check(
+        &root,
+        "repo.privacy_tests",
+        None,
+        &[
+            "P2.1", "P3.1", "P3.2", "P4.2", "P4.3", "P5.1", "P5.2", "PI1.2", "PI1.4", "PI1.5",
+        ],
+        &["app/test/privacy.test.ts", "test/privacy.test.ts"],
+        &observed_at,
+    ));
     if root.join("firebase.json").is_file()
         || std::env::var("SHADOW_PROFILE").ok().as_deref() == Some("firebase")
     {
-        checks.push(file_check(&root, "firebase.configuration", None, &["CC5.2", "CC8.1"], &["firebase.json"], &observed_at));
+        checks.push(file_check(
+            &root,
+            "firebase.configuration",
+            None,
+            &["CC5.2", "CC8.1"],
+            &["firebase.json"],
+            &observed_at,
+        ));
         checks.push(firestore_rules_check(&root, &observed_at));
-        checks.push(file_check(&root, "firebase.rules_tests", Some("ci-tests"), &["CC6.1", "CC6.3", "CC8.1"], FIREBASE_RULE_TEST_PATHS, &observed_at));
+        checks.push(file_check(
+            &root,
+            "firebase.rules_tests",
+            Some("ci-tests"),
+            &["CC6.1", "CC6.3", "CC8.1"],
+            FIREBASE_RULE_TEST_PATHS,
+            &observed_at,
+        ));
     } else {
         for (id, criteria) in [
             ("firebase.configuration", &["CC5.2", "CC8.1"][..]),
             ("firebase.firestore_rules", &["CC6.1", "CC6.3", "C1.1"][..]),
             ("firebase.rules_tests", &["CC6.1", "CC6.3", "CC8.1"][..]),
         ] {
-            checks.push(observation(id, None, criteria, "design", Verdict::NotApplicable, "Firebase profile is not selected", "repository", &observed_at));
+            checks.push(observation(
+                id,
+                None,
+                criteria,
+                "design",
+                Verdict::NotApplicable,
+                "Firebase profile is not selected",
+                "repository",
+                &observed_at,
+            ));
         }
     }
-    checks.push(file_contains_check(&root, "gcp.keyless_deploy", "ci-tests", &["CC6.1", "CC6.3", "CC8.1"], ".github/workflows/deploy.yml", &["google-github-actions/auth", "workload_identity_provider", "service_account"], &observed_at));
-    checks.push(file_check(&root, "repo.dependency_lock", Some("dependabot"), &["CC7.1", "CC8.1"], DEPENDENCY_LOCK_PATHS, &observed_at));
+    checks.push(file_contains_check(
+        &root,
+        "gcp.keyless_deploy",
+        "ci-tests",
+        &["CC6.1", "CC6.3", "CC8.1"],
+        ".github/workflows/deploy.yml",
+        &[
+            "google-github-actions/auth",
+            "workload_identity_provider",
+            "service_account",
+        ],
+        &observed_at,
+    ));
+    checks.push(file_check(
+        &root,
+        "repo.dependency_lock",
+        Some("dependabot"),
+        &["CC7.1", "CC8.1"],
+        DEPENDENCY_LOCK_PATHS,
+        &observed_at,
+    ));
 
-    let restore_present = any_under(&root, "evidence", "restore");
-    checks.push(observation("evidence.restore_test", Some("restore-test"), &["A1.3"], "operating", if restore_present { Verdict::Pass } else { Verdict::Fail }, if restore_present { "restore-test evidence exists" } else { "no restore-test evidence found" }, "repo:evidence", &observed_at));
-    let access_review_present = any_under(&root, "evidence", "access-review");
-    checks.push(observation("evidence.access_review", Some("quarterly-access-review"), &["CC6.2", "CC6.3"], "operating", if access_review_present { Verdict::Pass } else { Verdict::Fail }, if access_review_present { "access-review evidence exists" } else { "no access-review evidence found" }, "repo:evidence", &observed_at));
-    let oversight_present = any_under(&root, "evidence", "oversight") || any_under(&root, "evidence", "management-review");
-    checks.push(observation("evidence.management_review", Some("quarterly-mgmt-review"), &["CC1.2", "CC4.2"], "operating", if oversight_present { Verdict::Pass } else { Verdict::Fail }, if oversight_present { "management-review evidence exists" } else { "no management-review evidence found" }, "repo:evidence", &observed_at));
-    let tabletop_present = any_under(&root, "evidence", "tabletop");
-    checks.push(observation("evidence.tabletop", Some("annual-rituals"), &["CC7.5", "CC3.1"], "operating", if tabletop_present { Verdict::Pass } else { Verdict::Fail }, if tabletop_present { "tabletop evidence exists" } else { "no tabletop evidence found" }, "repo:evidence", &observed_at));
+    let restore = complete_artifact_under(&root, "evidence", "restore");
+    checks.push(observation(
+        "evidence.restore_test",
+        Some("restore-test"),
+        &["A1.3"],
+        "operating",
+        if restore.is_some() {
+            Verdict::Pass
+        } else {
+            Verdict::Fail
+        },
+        restore
+            .as_ref()
+            .map_or("no complete restore-test evidence found".into(), |p| {
+                format!("complete restore-test evidence: {}", p.display())
+            }),
+        restore
+            .as_ref()
+            .map_or("repo:evidence".into(), |p| format!("repo:{}", p.display())),
+        &observed_at,
+    ));
+    let access_review = complete_artifact_under(&root, "evidence", "access-review");
+    checks.push(observation(
+        "evidence.access_review",
+        Some("quarterly-access-review"),
+        &["CC6.2", "CC6.3"],
+        "operating",
+        if access_review.is_some() {
+            Verdict::Pass
+        } else {
+            Verdict::Fail
+        },
+        access_review
+            .as_ref()
+            .map_or("no complete access-review evidence found".into(), |p| {
+                format!("complete access-review evidence: {}", p.display())
+            }),
+        access_review
+            .as_ref()
+            .map_or("repo:evidence".into(), |p| format!("repo:{}", p.display())),
+        &observed_at,
+    ));
+    let oversight = complete_artifact_under(&root, "evidence", "oversight")
+        .or_else(|| complete_artifact_under(&root, "evidence", "management-review"));
+    checks.push(observation(
+        "evidence.management_review",
+        Some("quarterly-mgmt-review"),
+        &["CC1.2", "CC4.2"],
+        "operating",
+        if oversight.is_some() {
+            Verdict::Pass
+        } else {
+            Verdict::Fail
+        },
+        oversight
+            .as_ref()
+            .map_or("no complete management-review evidence found".into(), |p| {
+                format!("complete management-review evidence: {}", p.display())
+            }),
+        oversight
+            .as_ref()
+            .map_or("repo:evidence".into(), |p| format!("repo:{}", p.display())),
+        &observed_at,
+    ));
+    let tabletop = complete_artifact_under(&root, "evidence", "tabletop");
+    checks.push(observation(
+        "evidence.tabletop",
+        Some("annual-rituals"),
+        &["CC7.5", "CC3.1"],
+        "operating",
+        if tabletop.is_some() {
+            Verdict::Pass
+        } else {
+            Verdict::Fail
+        },
+        tabletop
+            .as_ref()
+            .map_or("no complete tabletop evidence found".into(), |p| {
+                format!("complete tabletop evidence: {}", p.display())
+            }),
+        tabletop
+            .as_ref()
+            .map_or("repo:evidence".into(), |p| format!("repo:{}", p.display())),
+        &observed_at,
+    ));
 
     checks.extend(gcp_observations(&gcp_projects, &observed_at));
     checks.extend(attestation_observations(&root, &observed_at));
@@ -720,7 +1253,8 @@ pub fn run_verify() -> Result<i32, String> {
     std::fs::write(format!("shadow/readiness-{stamp}.json"), &body).map_err(|e| e.to_string())?;
 
     if std::env::var("ARCHIVES_PUSH").as_deref() == Ok("1") {
-        let branch = std::env::var("ARCHIVES_BRANCH").unwrap_or_else(|_| "compliance-archives".into());
+        let branch =
+            std::env::var("ARCHIVES_BRANCH").unwrap_or_else(|_| "compliance-archives".into());
         let month = crate::util::utc_date("%Y/%m");
         commit_to_archives(
             &branch,
@@ -732,7 +1266,10 @@ pub fn run_verify() -> Result<i32, String> {
         )?;
     }
 
-    println!("{} deterministic observation(s), {failures} failure(s), {unknowns} unknown(s)", report["checks"].as_array().map(Vec::len).unwrap_or(0));
+    println!(
+        "{} deterministic observation(s), {failures} failure(s), {unknowns} unknown(s)",
+        report["checks"].as_array().map(Vec::len).unwrap_or(0)
+    );
     Ok(if failures == 0 { 0 } else { 1 })
 }
 
@@ -766,8 +1303,26 @@ mod tests {
     #[test]
     fn summary_keeps_dimensions_separate() {
         let checks = vec![
-            observation("a", None, &["CC1.1"], "design", Verdict::Pass, "ok", "repo", "now"),
-            observation("b", None, &["CC1.1"], "technical", Verdict::Fail, "bad", "api", "now"),
+            observation(
+                "a",
+                None,
+                &["CC1.1"],
+                "design",
+                Verdict::Pass,
+                "ok",
+                "repo",
+                "now",
+            ),
+            observation(
+                "b",
+                None,
+                &["CC1.1"],
+                "technical",
+                Verdict::Fail,
+                "bad",
+                "api",
+                "now",
+            ),
         ];
         let s = summary(&checks);
         assert_eq!(s["dimensions"]["design"]["percent"], 100.0);

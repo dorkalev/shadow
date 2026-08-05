@@ -65,19 +65,6 @@ wait_gate() { # $1 = pr number, $2 = FAILURE|SUCCESS wanted
   return 1
 }
 
-# DEMO safety: the heartbeat PR is a trivial one-line append. Resolve any
-# bot-authored review threads on it so a stray LLM "finding" can't deadlock the
-# positive control forever (only the author resolves threads, and the demo has
-# no author sitting there). Best-effort; scoped to the throwaway heartbeat PR.
-resolve_bot_threads() { # $1 = pr number
-  local owner name
-  owner="${REPO%%/*}"; name="${REPO##*/}"
-  gh api graphql -f query='query($o:String!,$n:String!,$p:Int!){repository(owner:$o,name:$n){pullRequest(number:$p){reviewThreads(first:100){nodes{id isResolved comments(first:1){nodes{author{login}}}}}}}}'     -f o="$owner" -f n="$name" -F p="$1" 2>/dev/null     | jq -r '.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved==false) | select(.comments.nodes[0].author.login|endswith("[bot]")) | .id' 2>/dev/null     | while read -r tid; do
-        [ -n "$tid" ] || continue
-        gh api graphql -f query='mutation($t:ID!){resolveReviewThread(input:{threadId:$t}){thread{id}}}' -f t="$tid" >/dev/null 2>&1 || true
-      done
-}
-
 wait_fresh_gate() { # after editing a PR: wait for the RERUN to start, then for its verdict
   # (otherwise the previous verdict reads as the fresh one — a false control result)
   for i in $(seq 1 18); do
@@ -92,8 +79,8 @@ wait_fresh_gate() { # after editing a PR: wait for the RERUN to start, then for 
 # ---------- part I: the pipeline, re-proven ----------
 if [ "$PIPELINE" = 1 ]; then
   step "part I — the route: ticket → commit → PR → gates → merge → archive"
-  git fetch -q origin staging
-  git checkout -q staging && git pull -q
+  git fetch -q origin main
+  git checkout -q main && git pull -q
   ISSUE=$(gh issue create --title "Judgment: re-prove the pipeline ($(date -u +%F))" \
     --body "Recurring end-to-end proof that the change gates operate: reject non-compliant, accept compliant, archive the merge." \
     | grep -oE '[0-9]+$')
@@ -104,7 +91,7 @@ if [ "$PIPELINE" = 1 ]; then
   git add heartbeat.md && git commit -qm "Judgment heartbeat (#$ISSUE)" && git push -qu origin "$BR"
   ok "committed and pushed $BR"
 
-  PR=$(gh pr create --base staging --title "heartbeat" --body "wip" | grep -oE '[0-9]+$')
+  PR=$(gh pr create --base main --title "heartbeat" --body "wip" | grep -oE '[0-9]+$')
   ok "non-compliant PR #$PR is up — the gate must reject it (no ticket, no sections)"
   wait_gate "$PR" FAILURE && ok "NEGATIVE CONTROL 1 PASSED — gate rejected the unauthorized change" \
     || { bad "gate accepted a non-compliant PR — the control is broken"; exit 1; }
@@ -141,7 +128,6 @@ Recurring end-to-end proof of the change gates (#$ISSUE).
 ## Test Plan
 - [x] gate rejected the non-compliant version
 - [x] gate passes this version; merge archived" >/dev/null
-  resolve_bot_threads "$PR"   # demo heartbeat: keep a stray finding from deadlocking the positive control
   wait_fresh_gate "$PR" SUCCESS && ok "POSITIVE CONTROL PASSED — gate accepted the real authorization" \
     || { bad "gate did not go green — gh pr checks $PR"; exit 1; }
 
@@ -155,7 +141,7 @@ Recurring end-to-end proof of the change gates (#$ISSUE).
   git ls-tree -r --name-only origin/compliance-archives | grep -q "pr-$PR-" \
     && ok "archive record present — route proven" || { bad "no archive record"; exit 1; }
   gh issue close "$ISSUE" --comment "Judgment $(date -u +%F): gate rejected non-compliant, accepted compliant, merge archived. CC8.1/CC4.1 evidence." >/dev/null || true
-  git checkout -q staging && git pull -q
+  git checkout -q main && git pull -q
 fi
 
 # ---------- part II: deterministic readiness snapshot ----------
@@ -189,7 +175,7 @@ fi
 
 GCP_PROJECTS=$(jq -r '.gcp_projects // [] | join(",")' shadow/scope.json 2>/dev/null || echo "")
 set +e
-REPO="$REPO" SHADOW_ROOT="$(pwd)" GCP_PROJECTS="$GCP_PROJECTS" SHADOW_BRANCHES="main,staging" \
+REPO="$REPO" SHADOW_ROOT="$(pwd)" GCP_PROJECTS="$GCP_PROJECTS" SHADOW_BRANCHES="main" \
   "$SHADOW_CI" verify
 VERIFY_EXIT=$?
 set -e

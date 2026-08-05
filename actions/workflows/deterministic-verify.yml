@@ -40,7 +40,7 @@ jobs:
       - name: Verify repository, GitHub, and configured cloud controls
         env:
           GH_TOKEN: ${{ secrets.ORG_READ_TOKEN || secrets.GITHUB_TOKEN }}
-          SHADOW_BRANCHES: "main,staging"
+          SHADOW_BRANCHES: "main"
           GCP_PROJECTS: ${{ vars.GCP_PROJECTS }}
         run: .shadow/ci/target/release/shadow-ci verify
 

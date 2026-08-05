@@ -60,16 +60,27 @@ pub fn curl_post(url: &str, headers: &[(&str, &str)], body: &str) -> Result<Stri
     run("curl", &arg_refs)
 }
 
-/// Commit a set of (relative_path, content) files to the append-only archives
+/// Commit a set of (relative_path, content) files to the protected archives
 /// branch via a temporary worktree. Creates the orphan branch on first use.
 /// Retries once through a rebase if a concurrent writer won the push race.
-pub fn commit_to_archives(branch: &str, files: &[(String, String)], msg: &str) -> Result<(), String> {
+pub fn commit_to_archives(
+    branch: &str,
+    files: &[(String, String)],
+    msg: &str,
+) -> Result<(), String> {
     let dir = format!("/tmp/shadow-archives-{}", std::process::id());
     let _ = git(&["worktree", "remove", "--force", &dir]);
 
     if git(&["fetch", "origin", branch]).is_ok() {
         git(&["worktree", "add", &dir, &format!("origin/{branch}")])?;
-        git(&["-C", &dir, "checkout", "-B", branch, &format!("origin/{branch}")])?;
+        git(&[
+            "-C",
+            &dir,
+            "checkout",
+            "-B",
+            branch,
+            &format!("origin/{branch}"),
+        ])?;
     } else {
         git(&["worktree", "add", "--detach", &dir])?;
         git(&["-C", &dir, "checkout", "--orphan", branch])?;
@@ -90,8 +101,17 @@ pub fn commit_to_archives(branch: &str, files: &[(String, String)], msg: &str) -
     }
 
     git(&["-C", &dir, "add", "-A"])?;
-    git(&["-C", &dir, "-c", "user.name=shadow-ci", "-c", "user.email=shadow-ci@noreply.local",
-          "commit", "-m", msg])?;
+    git(&[
+        "-C",
+        &dir,
+        "-c",
+        "user.name=shadow-ci",
+        "-c",
+        "user.email=shadow-ci@noreply.local",
+        "commit",
+        "-m",
+        msg,
+    ])?;
     if git(&["-C", &dir, "push", "origin", &format!("HEAD:{branch}")]).is_err() {
         git(&["-C", &dir, "pull", "--rebase", "origin", branch])?;
         git(&["-C", &dir, "push", "origin", &format!("HEAD:{branch}")])?;

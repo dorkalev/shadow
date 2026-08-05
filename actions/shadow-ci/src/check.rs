@@ -43,13 +43,22 @@ impl Config {
                 .map_err(|_| "REPO or GITHUB_REPOSITORY required")?,
             pr: std::env::var("PR_NUMBER").map_err(|_| "PR_NUMBER required")?,
             ticket_pattern: env_or("TICKET_PATTERN", r"[A-Z]{2,6}-[0-9]+|#[0-9]+"),
-            agent_key: env_or("AGENT_KEY", if phase == "post-review" { "review-gate" } else { "audit" }),
+            agent_key: env_or(
+                "AGENT_KEY",
+                if phase == "post-review" {
+                    "review-gate"
+                } else {
+                    "audit"
+                },
+            ),
             phase,
             threshold: env_or("CONFIDENCE_THRESHOLD", "70").parse().unwrap_or(70),
             required_reviewers: csv("REQUIRED_REVIEWERS"),
             expected_reviewers: csv("EXPECTED_REVIEWERS"),
             test_exclude_paths: csv("TEST_EXCLUDE_PATHS"),
-            linear_key: std::env::var("LINEAR_API_KEY").ok().filter(|s| !s.is_empty()),
+            linear_key: std::env::var("LINEAR_API_KEY")
+                .ok()
+                .filter(|s| !s.is_empty()),
         })
     }
 }
@@ -84,15 +93,25 @@ pub fn is_exempt_minor(path: &str) -> bool {
     let base = path.rsplit('/').next().unwrap_or(path);
     matches!(
         base,
-        "Cargo.lock" | "package-lock.json" | "yarn.lock" | "pnpm-lock.yaml" | "poetry.lock"
-            | "Gemfile.lock" | ".gitignore" | ".gitattributes"
+        "Cargo.lock"
+            | "package-lock.json"
+            | "yarn.lock"
+            | "pnpm-lock.yaml"
+            | "poetry.lock"
+            | "Gemfile.lock"
+            | ".gitignore"
+            | ".gitattributes"
     )
 }
 
-const SOURCE_EXT: &[&str] = &["rs", "ts", "tsx", "js", "jsx", "py", "go", "rb", "java", "kt", "swift", "c", "cc", "cpp"];
+const SOURCE_EXT: &[&str] = &[
+    "rs", "ts", "tsx", "js", "jsx", "py", "go", "rb", "java", "kt", "swift", "c", "cc", "cpp",
+];
 
 pub fn is_source_file(path: &str) -> bool {
-    path.rsplit('.').next().map_or(false, |e| SOURCE_EXT.contains(&e))
+    path.rsplit('.')
+        .next()
+        .map_or(false, |e| SOURCE_EXT.contains(&e))
 }
 
 pub fn is_test_file(path: &str) -> bool {
@@ -110,7 +129,11 @@ pub fn is_test_file(path: &str) -> bool {
 /// Does any file in `candidates` look like a test for `src_path`?
 pub fn has_test_for(src_path: &str, candidates: &[String]) -> bool {
     let base = src_path.rsplit('/').next().unwrap_or(src_path);
-    let stem = base.rsplit_once('.').map(|(s, _)| s).unwrap_or(base).to_lowercase();
+    let stem = base
+        .rsplit_once('.')
+        .map(|(s, _)| s)
+        .unwrap_or(base)
+        .to_lowercase();
     if stem.is_empty() {
         return false;
     }
@@ -125,7 +148,10 @@ pub fn severity_of(text: &str) -> Option<&'static str> {
     if Regex::new(r"\bcritical\b").unwrap().is_match(&t) {
         return Some("critical");
     }
-    if Regex::new(r"\bmajor\b|\bpotential issue\b").unwrap().is_match(&t) {
+    if Regex::new(r"\bmajor\b|\bpotential issue\b")
+        .unwrap()
+        .is_match(&t)
+    {
         return Some("major");
     }
     None
@@ -142,13 +168,13 @@ pub fn bot_login_for(name: &str) -> String {
     }
 }
 
-/// The shadow reviewer always leaves a summary comment carrying this marker —
-/// including its "no LLM key configured" notice, which satisfies presence while
-/// documenting the gap.
-pub const SHADOW_REVIEW_MARKER: &str = "<!-- shadow-review -->";
+/// A completed semantic review carries this exact marker. Unavailable, skipped,
+/// timed-out, or failed review runs use different markers and never satisfy a
+/// configured reviewer requirement.
+pub const SHADOW_REVIEW_MARKER: &str = "<!-- shadow-review:complete -->";
 
 /// The marker counts ONLY when a bot posted it — an author pasting the marker
-/// string into a normal comment must not fake independent review. `author` is
+/// string into a normal comment must not fake a completed bot run. `author` is
 /// the PR author's login, excluded even if it somehow ends in [bot].
 pub fn shadow_review_posted_by_bot(comments: &Value, author: &str) -> bool {
     comments
@@ -156,7 +182,10 @@ pub fn shadow_review_posted_by_bot(comments: &Value, author: &str) -> bool {
         .map(|a| {
             a.iter().any(|c| {
                 let login = c["user"]["login"].as_str().unwrap_or("");
-                c["body"].as_str().unwrap_or("").contains(SHADOW_REVIEW_MARKER)
+                c["body"]
+                    .as_str()
+                    .unwrap_or("")
+                    .contains(SHADOW_REVIEW_MARKER)
                     && login.ends_with("[bot]")
                     && login != author
             })
@@ -165,19 +194,28 @@ pub fn shadow_review_posted_by_bot(comments: &Value, author: &str) -> bool {
 }
 
 /// Attestation-side presence check (no author to exclude): marker from a bot.
+#[cfg(test)]
 pub fn shadow_review_posted(comments: &Value) -> bool {
     comments
         .as_array()
         .map(|a| {
             a.iter().any(|c| {
-                c["body"].as_str().unwrap_or("").contains(SHADOW_REVIEW_MARKER)
+                c["body"]
+                    .as_str()
+                    .unwrap_or("")
+                    .contains(SHADOW_REVIEW_MARKER)
                     && c["user"]["login"].as_str().unwrap_or("").ends_with("[bot]")
             })
         })
         .unwrap_or(false)
 }
 
-pub fn calculate_score(invalid_tickets: usize, unspecced: usize, untested: usize, missing_reviewers: usize) -> i64 {
+pub fn calculate_score(
+    invalid_tickets: usize,
+    unspecced: usize,
+    untested: usize,
+    missing_reviewers: usize,
+) -> i64 {
     let score = 100i64
         - 10 * invalid_tickets as i64
         - 10 * unspecced as i64
@@ -226,19 +264,27 @@ fn unresolved_findings(cfg: &Config) -> Result<Vec<String>, String> {
     let (owner, name) = cfg.repo.split_once('/').ok_or("bad REPO")?;
     let query = "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){reviewThreads(first:100){nodes{isResolved comments(first:1){nodes{author{login} body}}}}}}}";
     let v = gh_json(&[
-        "api", "graphql",
-        "-f", &format!("query={query}"),
-        "-f", &format!("owner={owner}"),
-        "-f", &format!("name={name}"),
-        "-F", &format!("number={}", cfg.pr),
+        "api",
+        "graphql",
+        "-f",
+        &format!("query={query}"),
+        "-f",
+        &format!("owner={owner}"),
+        "-f",
+        &format!("name={name}"),
+        "-F",
+        &format!("number={}", cfg.pr),
     ])?;
     let mut out = Vec::new();
-    if let Some(nodes) = v["data"]["repository"]["pullRequest"]["reviewThreads"]["nodes"].as_array() {
+    if let Some(nodes) = v["data"]["repository"]["pullRequest"]["reviewThreads"]["nodes"].as_array()
+    {
         for t in nodes {
             if t["isResolved"].as_bool() == Some(true) {
                 continue;
             }
-            let Some(c) = t["comments"]["nodes"].get(0) else { continue };
+            let Some(c) = t["comments"]["nodes"].get(0) else {
+                continue;
+            };
             let login = c["author"]["login"].as_str().unwrap_or("");
             let body = c["body"].as_str().unwrap_or("");
             let configured: bool = cfg
@@ -251,7 +297,13 @@ fn unresolved_findings(cfg: &Config) -> Result<Vec<String>, String> {
                 continue;
             }
             if let Some(sev) = severity_of(body) {
-                let first_line: String = body.lines().next().unwrap_or("").chars().take(120).collect();
+                let first_line: String = body
+                    .lines()
+                    .next()
+                    .unwrap_or("")
+                    .chars()
+                    .take(120)
+                    .collect();
                 out.push(format!("[{sev}] {login}: {first_line}"));
             }
         }
@@ -271,11 +323,19 @@ fn reviewer_posted(cfg: &Config, pr_json: &Value, comments: &Value, name: &str) 
     let is_reviewer = |login: &str| login == want || login == format!("{want}[bot]");
     let in_reviews = pr_json["reviews"]
         .as_array()
-        .map(|a| a.iter().any(|r| is_reviewer(r["author"]["login"].as_str().unwrap_or("")) && r["author"]["login"].as_str() != Some(author)))
+        .map(|a| {
+            a.iter().any(|r| {
+                is_reviewer(r["author"]["login"].as_str().unwrap_or(""))
+                    && r["author"]["login"].as_str() != Some(author)
+            })
+        })
         .unwrap_or(false);
     let in_comments = comments
         .as_array()
-        .map(|a| a.iter().any(|c| is_reviewer(c["user"]["login"].as_str().unwrap_or(""))))
+        .map(|a| {
+            a.iter()
+                .any(|c| is_reviewer(c["user"]["login"].as_str().unwrap_or("")))
+        })
         .unwrap_or(false);
     in_reviews || in_comments
 }
@@ -288,19 +348,28 @@ fn upsert_comment(cfg: &Config, marker: &str, body: &str) -> Result<(), String> 
     ])?;
     let existing = comments
         .as_array()
-        .and_then(|a| a.iter().find(|c| c["body"].as_str().unwrap_or("").contains(marker)))
+        .and_then(|a| {
+            a.iter()
+                .find(|c| c["body"].as_str().unwrap_or("").contains(marker))
+        })
         .and_then(|c| c["id"].as_i64());
     match existing {
         Some(id) => gh(&[
-            "api", "-X", "PATCH",
+            "api",
+            "-X",
+            "PATCH",
             &format!("repos/{}/issues/comments/{id}", cfg.repo),
-            "-f", &format!("body={body}"),
+            "-f",
+            &format!("body={body}"),
         ])
         .map(|_| ()),
         None => gh(&[
-            "api", "-X", "POST",
+            "api",
+            "-X",
+            "POST",
             &format!("repos/{}/issues/{}/comments", cfg.repo, cfg.pr),
-            "-f", &format!("body={body}"),
+            "-f",
+            &format!("body={body}"),
         ])
         .map(|_| ()),
     }
@@ -312,9 +381,13 @@ pub fn run_check() -> Result<i32, String> {
     let cfg = Config::from_env()?;
 
     let pr = gh_json(&[
-        "pr", "view", &cfg.pr,
-        "--repo", &cfg.repo,
-        "--json", "title,body,labels,files,reviews,isDraft",
+        "pr",
+        "view",
+        &cfg.pr,
+        "--repo",
+        &cfg.repo,
+        "--json",
+        "title,body,labels,files,reviews,isDraft",
     ])?;
     let title = pr["title"].as_str().unwrap_or("");
     let body = pr["body"].as_str().unwrap_or("");
@@ -329,12 +402,19 @@ pub fn run_check() -> Result<i32, String> {
     // exempt label short-circuits (still leaves a visible record)
     let exempt = pr["labels"]
         .as_array()
-        .map(|a| a.iter().any(|l| l["name"].as_str() == Some("compliance:exempt")))
+        .map(|a| {
+            a.iter()
+                .any(|l| l["name"].as_str() == Some("compliance:exempt"))
+        })
         .unwrap_or(false);
 
     let changed: Vec<String> = pr["files"]
         .as_array()
-        .map(|a| a.iter().filter_map(|f| f["path"].as_str().map(String::from)).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(|f| f["path"].as_str().map(String::from))
+                .collect()
+        })
         .unwrap_or_default();
 
     // 1. tickets. FAIL-CLOSED: a ticket we could not verify is `unverified`, NOT
@@ -347,7 +427,9 @@ pub fn run_check() -> Result<i32, String> {
         let verdict = if let Some(num) = t.strip_prefix('#') {
             github_issue_valid(&cfg.repo, num, &cfg.pr)
         } else if cfg.linear_key.is_some() {
-            cfg.linear_key.as_deref().and_then(|k| linear_ticket_exists(k, t))
+            cfg.linear_key
+                .as_deref()
+                .and_then(|k| linear_ticket_exists(k, t))
         } else {
             None // Linear-style ticket but no key configured → cannot verify
         };
@@ -397,10 +479,21 @@ pub fn run_check() -> Result<i32, String> {
     // "no unresolved findings" — treat the evaluation as failed, not clean.
     let findings_err;
     let findings = match unresolved_findings(&cfg) {
-        Ok(f) => { findings_err = false; f }
-        Err(e) => { eprintln!("review-findings query failed: {e}"); findings_err = true; Vec::new() }
+        Ok(f) => {
+            findings_err = false;
+            f
+        }
+        Err(e) => {
+            eprintln!("review-findings query failed: {e}");
+            findings_err = true;
+            Vec::new()
+        }
     };
-    let reviewers_to_check = if cfg.phase == "post-review" { &cfg.required_reviewers } else { &cfg.expected_reviewers };
+    let reviewers_to_check = if cfg.phase == "post-review" {
+        &cfg.required_reviewers
+    } else {
+        &cfg.expected_reviewers
+    };
     let missing_reviewers: Vec<String> = reviewers_to_check
         .iter()
         .filter(|r| !reviewer_posted(&cfg, &pr, &comments, r))
@@ -433,13 +526,21 @@ pub fn run_check() -> Result<i32, String> {
         hard_gates.push("MANDATORY: PR description is empty or too brief (min 20 chars)".into());
     }
     if findings_err {
-        hard_gates.push("MANDATORY: could not evaluate review findings (API error) — failing closed".into());
+        hard_gates.push(
+            "MANDATORY: could not evaluate review findings (API error) — failing closed".into(),
+        );
     }
     if !findings.is_empty() {
-        hard_gates.push(format!("MANDATORY: {} unresolved critical/major review finding(s)", findings.len()));
+        hard_gates.push(format!(
+            "MANDATORY: {} unresolved critical/major review finding(s)",
+            findings.len()
+        ));
     }
     if reviewers_block {
-        hard_gates.push(format!("MANDATORY: required reviewer(s) not posted: {}", missing_reviewers.join(", ")));
+        hard_gates.push(format!(
+            "MANDATORY: required reviewer(s) not posted: {}",
+            missing_reviewers.join(", ")
+        ));
     }
     // `compliant:exempt` waives the SCORE threshold only — it can NEVER waive a
     // hard gate (missing ticket, empty body, unresolved Critical/Major, missing
@@ -462,8 +563,11 @@ pub fn run_check() -> Result<i32, String> {
         "unresolved_findings": findings,
         "hard_gates": hard_gates,
     });
-    std::fs::write("compliance_report.json", serde_json::to_string_pretty(&report).unwrap())
-        .map_err(|e| e.to_string())?;
+    std::fs::write(
+        "compliance_report.json",
+        serde_json::to_string_pretty(&report).unwrap(),
+    )
+    .map_err(|e| e.to_string())?;
     println!("{}", serde_json::to_string_pretty(&report).unwrap());
 
     // PR comment
@@ -474,15 +578,26 @@ pub fn run_check() -> Result<i32, String> {
     }
 
     if let Ok(out_path) = std::env::var("GITHUB_OUTPUT") {
-        let _ = run("bash", &["-c", &format!("echo 'compliant={compliant}' >> {out_path}")]);
+        let _ = run(
+            "bash",
+            &["-c", &format!("echo 'compliant={compliant}' >> {out_path}")],
+        );
     }
     Ok(if compliant { 0 } else { 1 })
 }
 
 fn render_comment(marker: &str, cfg: &Config, r: &Value) -> String {
     let ok = r["compliant"].as_bool().unwrap_or(false);
-    let (icon, verdict) = if ok { ("✅", "Passed") } else { ("❌", "Failed") };
-    let phase_name = if cfg.phase == "post-review" { "Review Gate" } else { "Audit" };
+    let (icon, verdict) = if ok {
+        ("✅", "Passed")
+    } else {
+        ("❌", "Failed")
+    };
+    let phase_name = if cfg.phase == "post-review" {
+        "Review Gate"
+    } else {
+        "Audit"
+    };
     let mut s = format!(
         "{marker}\n## {icon} Shadow Compliance — {phase_name}: {verdict} ({}%)\n\n",
         r["score"]
@@ -492,7 +607,12 @@ fn render_comment(marker: &str, cfg: &Config, r: &Value) -> String {
     }
     let list = |v: &Value| -> String {
         v.as_array()
-            .map(|a| a.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(", "))
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| x.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            })
             .unwrap_or_default()
     };
     s.push_str(&format!(
@@ -517,12 +637,19 @@ fn render_comment(marker: &str, cfg: &Config, r: &Value) -> String {
         s.push_str("\nFix with the `fix-compliance` command: every changed file must appear in the PR body's Changes section, every ticket must exist, changed source files need tests, and critical/major review findings must be resolved.\n");
     }
     let run_id = env_or("GITHUB_RUN_ID", "local");
-    s.push_str(&format!("\n<sub>shadow-ci · phase {} · run {run_id}</sub>\n", cfg.phase));
+    s.push_str(&format!(
+        "\n<sub>shadow-ci · phase {} · run {run_id}</sub>\n",
+        cfg.phase
+    ));
     s
 }
 
 fn or_dash(s: &str) -> String {
-    if s.is_empty() { "—".into() } else { s.into() }
+    if s.is_empty() {
+        "—".into()
+    } else {
+        s.into()
+    }
 }
 
 #[cfg(test)]
@@ -531,11 +658,19 @@ mod tests {
 
     #[test]
     fn tickets_from_title_and_body_deduped_ordered() {
-        let t = extract_tickets("ABC-12: fix", "closes ABC-12, relates ABC-7", r"[A-Z]{2,6}-[0-9]+");
+        let t = extract_tickets(
+            "ABC-12: fix",
+            "closes ABC-12, relates ABC-7",
+            r"[A-Z]{2,6}-[0-9]+",
+        );
         assert_eq!(t, vec!["ABC-12", "ABC-7"]);
         assert!(extract_tickets("no tickets here", "", r"[A-Z]{2,6}-[0-9]+").is_empty());
         // the default pattern accepts both tracker styles
-        let both = extract_tickets("#42: fix login", "relates ABC-7 and #42", r"[A-Z]{2,6}-[0-9]+|#[0-9]+");
+        let both = extract_tickets(
+            "#42: fix login",
+            "relates ABC-7 and #42",
+            r"[A-Z]{2,6}-[0-9]+|#[0-9]+",
+        );
         assert_eq!(both, vec!["#42", "ABC-7"]);
     }
 
@@ -555,17 +690,24 @@ mod tests {
         assert!(!is_source_file("README.md"));
         assert!(is_test_file("tests/gauge_test.rs"));
         assert!(is_test_file("src/foo.spec.ts"));
-        let candidates = vec!["tests/test_gauge.rs".to_string(), "src/gauge.rs".to_string()];
+        let candidates = vec![
+            "tests/test_gauge.rs".to_string(),
+            "src/gauge.rs".to_string(),
+        ];
         assert!(has_test_for("src/gauge.rs", &candidates));
         assert!(!has_test_for("src/needle.rs", &candidates));
     }
 
     #[test]
     fn shadow_reviewer_presence_requires_bot_author() {
-        let by_bot = serde_json::json!([{"user":{"login":"github-actions[bot]"},"body":"<!-- shadow-review -->\nno blocking findings"}]);
-        let by_author = serde_json::json!([{"user":{"login":"mallory"},"body":"<!-- shadow-review -->\nfaking it"}]);
+        let by_bot = serde_json::json!([{"user":{"login":"github-actions[bot]"},"body":"<!-- shadow-review:complete -->\nno blocking findings"}]);
+        let unavailable = serde_json::json!([{"user":{"login":"github-actions[bot]"},"body":"<!-- shadow-review:unavailable -->\nreview did not run"}]);
+        let legacy = serde_json::json!([{"user":{"login":"github-actions[bot]"},"body":"<!-- shadow-review -->\nambiguous legacy marker"}]);
+        let by_author = serde_json::json!([{"user":{"login":"mallory"},"body":"<!-- shadow-review:complete -->\nfaking it"}]);
         let other_comment = serde_json::json!([{"user":{"login":"github-actions[bot]"},"body":"<!-- shadow-ci:audit -->\ncompliance report"}]);
         assert!(shadow_review_posted_by_bot(&by_bot, "mallory"));
+        assert!(!shadow_review_posted_by_bot(&unavailable, "mallory"));
+        assert!(!shadow_review_posted_by_bot(&legacy, "mallory"));
         assert!(!shadow_review_posted_by_bot(&by_author, "mallory")); // author cannot paste the marker
         assert!(!shadow_review_posted_by_bot(&other_comment, "mallory")); // wrong marker
         assert!(shadow_review_posted(&by_bot));
@@ -576,7 +718,10 @@ mod tests {
     #[test]
     fn severity_classification() {
         assert_eq!(severity_of("Critical: SQL injection"), Some("critical"));
-        assert_eq!(severity_of("this is a Potential issue with retries"), Some("major"));
+        assert_eq!(
+            severity_of("this is a Potential issue with retries"),
+            Some("major")
+        );
         assert_eq!(severity_of("nitpick: rename this"), None);
     }
 

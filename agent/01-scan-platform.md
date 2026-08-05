@@ -67,7 +67,7 @@ Look for what exists, wherever it exists (repo, Drive export, Notion export, an 
 
 ## Phase 5 — SDLC gap vs the dictated SDLC
 
-Diff reality against [`../sdlc/SDLC.md`](../sdlc/SDLC.md), element by element: ticket-first? staging/main topology? PR gates? compliance agent? archives branch? release records? hotfix procedure? clock rituals (access reviews, management reviews) with evidence?
+Diff reality against [`../sdlc/SDLC.md`](../sdlc/SDLC.md), element by element: ticket-first? main-only PR topology? PR gates? compliance agent? protected archives branch? release records? hotfix procedure? clock rituals (access reviews, management reviews) with evidence?
 
 ## Output
 

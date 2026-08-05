@@ -36,7 +36,9 @@ fn main() {
             eprintln!("  archive  post-merge evidence record (env: REPO, PR_NUMBER, TICKET_PATTERN, ARCHIVES_BRANCH,");
             eprintln!("           REQUIRED_CHECKS_OVERRIDE, SLACK_WEBHOOK_URL)");
             eprintln!("  access-review   quarterly access packet  (env: ORG, GCP_PROJECTS, USER_FILTER, ARCHIVES_PUSH)");
-            eprintln!("  mgmt-packet     quarterly mgmt packet    (env: REPO, SHADOW_DB, ARCHIVES_PUSH)");
+            eprintln!(
+                "  mgmt-packet     quarterly mgmt packet    (env: REPO, SHADOW_DB, ARCHIVES_PUSH)"
+            );
             eprintln!("  release-record  release evidence record  (env: TICKET_PATTERN, RELEASED_BY, ARCHIVES_PUSH)");
             eprintln!("  attest          CPA-style change attestation (env: REPO, SINCE, UNTIL, TICKET_PATTERN, ARCHIVES_PUSH)");
             eprintln!("  control-attest  expiring human-control evidence (env: CRITERION_ID, ATTESTED_BY, ATTESTATION_NOTE, EXPIRES_AT)");

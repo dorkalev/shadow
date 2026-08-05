@@ -91,7 +91,7 @@ Captured: {TICKET-ID} — {title}
 {ticket URL}
 Spec posted as first comment. Open questions: {n or none}.
 
-Next: /shadow:start {TICKET-ID}   (branch off staging + draft PR, then load)
+Next: /shadow:start {TICKET-ID}   (branch off main + draft PR, then load)
 ```
 
 ## STOP conditions

@@ -35,9 +35,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
-          ref: staging
+          ref: main
           fetch-depth: 0
           token: ${{ secrets.DRILL_TOKEN || secrets.GITHUB_TOKEN }}
           # NOTE: pushes/PRs made with the default GITHUB_TOKEN do NOT trigger
@@ -88,7 +88,7 @@ jobs:
           GH_TOKEN: ${{ secrets.DRILL_TOKEN }}
         run: |
           set -euo pipefail
-          PR=$(gh pr create --base staging --head "${{ steps.setup.outputs.branch }}" \
+          PR=$(gh pr create --base main --head "${{ steps.setup.outputs.branch }}" \
                 --title "drill heartbeat" --body "wip" | grep -oE '[0-9]+$')
           echo "pr=$PR" >> "$GITHUB_OUTPUT"
           # wait for the compliance audit to conclude — it must FAIL (no ticket, thin body)

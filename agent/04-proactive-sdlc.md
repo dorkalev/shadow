@@ -6,7 +6,7 @@ This runbook is for the agent (or human+agent pair) doing *ordinary development 
 
 ### start — open work
 1. Take a ticket (or create one from the user's description — title, intent, acceptance criteria). No ticket, no branch.
-2. `git checkout -b {TICKET-ID}-{slug} origin/staging`; open a **draft PR to staging** immediately with the four-section template.
+2. `git checkout -b {TICKET-ID}-{slug} origin/main`; open a **draft PR to main** immediately with the four-section template.
 3. Move ticket to In Progress.
 
 ### load — spec, then build
@@ -16,8 +16,8 @@ This runbook is for the agent (or human+agent pair) doing *ordinary development 
 
 ### finish — the pre-push gate
 1. Cleanup (temp files, debug artifacts, stray secrets — scan the diff).
-2. **Spec alignment (blocking)**: compare the ticket + spec comment against `git diff origin/staging..HEAD`. Misaligned ⇒ fix the spec or drop the code; do not push misalignment.
-3. Commit, merge `origin/staging` (never rebase pushed work), push, mark PR ready.
+2. **Spec alignment (blocking)**: compare the ticket + spec comment against `git diff origin/main..HEAD`. Misaligned ⇒ fix the spec or drop the code; do not push misalignment.
+3. Commit, merge `origin/main` (never rebase pushed work), push, mark PR ready.
 4. PR body final form: Summary / Tickets table / **Changes with every file listed under its ticket** / Test Plan. Ticket → In Review.
 
 ### fix-compliance — answer the shadow
@@ -27,14 +27,14 @@ When the compliance check fails, read its PR comment + run log first, then fix m
 Fetch review-bot findings; fix Critical/Major (or reply with a concrete false-positive justification and resolve); commit; wait for re-review. Loop until no Critical/Major remain. The review-gate check enforces this anyway — doing it promptly is just cheaper.
 
 ### release — ship
-Only from green staging. Build the summary (commits, PRs, tickets since last release) → human types the confirmation word → archive record to `compliance-archives` → release ticket → `--ff-only` into main → comment the release on every included ticket. Fast-forward fails ⇒ stop and investigate, never force.
+Only through a green PR to main. The founder's authenticated merge is the approval-of-record; CI deploys that commit with a restricted keyless principal and records the deployment. Describe this as founder approval, never independent approval.
 
 ### hotfix — the documented emergency
-Pushed to main directly? Immediately: incident ticket (impact, root cause, why bypassed), backport PR to staging through normal gates, link everything. The next Runbook 03 run checks that every bypass has this paper trail; make it true before it has to check.
+Bypassed the protected main flow? Immediately create an incident ticket (impact, root cause, why bypassed) and an after-the-fact PR through the normal gates; link everything.
 
 ## Standing rules for AI agents in this SDLC
 
-1. Same doors as humans: no pushing with checks red, no self-approval (approving identity ≠ authoring identity), no editing rulesets/workflows to make a gate pass — a gate change is itself a ticketed, reviewed change.
+1. Same doors as the founder: no pushing with checks red and no editing rulesets/workflows merely to make a gate pass. In the solo profile the founder can author and merge, but the evidence says that plainly; AI tools never count as human approvers.
 2. Secrets never in code, diffs, tickets, or PR bodies. Seeing one in history ⇒ treat as incident (rotate, then hotfix procedure).
 3. Every destructive or production-touching action needs a ticket trail *first* (that's CC8.1 authorization, and it's also just how you'd want an agent to behave).
 4. When a gate and a deadline conflict, the gate wins; the human can consciously bypass — and the bypass detector will file the paperwork demand. The agent never bypasses on its own initiative.

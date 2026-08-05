@@ -6,19 +6,19 @@ name: Test and Coverage
 on:
   pull_request:
   push:
-    branches: [main, staging]
+    branches: [main]
 
 permissions:
   contents: read
 
 jobs:
-  test:
+  ci:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           workspaces: |
             actions/shadow-ci
@@ -31,7 +31,7 @@ jobs:
         run: cargo test --manifest-path website/app/Cargo.toml --locked
 
       - name: Install coverage tool
-        uses: taiki-e/install-action@cargo-llvm-cov
+        uses: taiki-e/install-action@faf6515f98a6da02430741fd0af1094fde82286d # cargo-llvm-cov
 
       - name: Measure control binary coverage
         run: |
@@ -46,7 +46,7 @@ jobs:
 
       - name: Upload coverage reports
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
         with:
           name: rust-coverage-${{ github.run_id }}
           path: coverage/*.json
