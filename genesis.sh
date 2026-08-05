@@ -190,6 +190,9 @@ if [ -n "$GCP_PROJECT" ]; then
     -var "service_name=app" 2>&1 | tail -3
   gh variable set GCP_WIF_PROVIDER --body "$(terraform -chdir=provision/gcp output -raw wif_provider)"
   gh variable set GCP_DEPLOY_SA    --body "$(terraform -chdir=provision/gcp output -raw deploy_service_account)"
+  gh variable set GCP_VERIFY_SA    --body "$(terraform -chdir=provision/gcp output -raw verify_service_account)"
+  gh variable set GCP_PROJECT_ID   --body "$GCP_PROJECT"
+  gh variable set GCP_PROJECTS     --body "$GCP_PROJECT"
   gh variable set GCP_ARTIFACT_REPO --body "$(terraform -chdir=provision/gcp output -raw artifact_repo)"
   gh variable set GCP_REGION --body "$REGION"
   gh variable set GCP_SERVICE --body "app"

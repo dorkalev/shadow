@@ -32,7 +32,7 @@ resource "google_project_service" "required" {
 }
 
 # ---------------------------------------------------------------------------
-# Identity: two service accounts, least privilege, zero keys.  CC6.1 / CC6.3
+# Identity: three service accounts, least privilege, zero keys.  CC6.1 / CC6.3
 # ---------------------------------------------------------------------------
 
 # Runtime identity — what the app runs as. Can read/write Firestore, nothing else.
@@ -94,6 +94,32 @@ resource "google_iam_workload_identity_pool_provider" "github" {
 
 resource "google_service_account_iam_member" "deploy_wif" {
   service_account_id = google_service_account.deploy.name
+  role               = "roles/iam.workloadIdentityUser"
+  member             = "principalSet://iam.googleapis.com/${google_iam_workload_identity_pool.github.name}/attribute.repository/${var.github_repo}"
+}
+
+# Verification identity — the deterministic daily observer can inspect only the
+# cloud controls it scores. It cannot deploy, mutate Firestore, or administer
+# IAM. Keeping this separate from the deployer contains a compromised workflow.
+resource "google_service_account" "verify" {
+  account_id   = "${var.service_name}-verify"
+  display_name = "Read-only compliance verifier for ${var.service_name}"
+}
+
+resource "google_project_iam_member" "verify_roles" {
+  for_each = toset([
+    "roles/datastore.viewer",
+    "roles/iam.securityReviewer",
+    "roles/logging.viewer",
+    "roles/monitoring.viewer",
+  ])
+  project = var.project_id
+  role    = each.value
+  member  = "serviceAccount:${google_service_account.verify.email}"
+}
+
+resource "google_service_account_iam_member" "verify_wif" {
+  service_account_id = google_service_account.verify.name
   role               = "roles/iam.workloadIdentityUser"
   member             = "principalSet://iam.googleapis.com/${google_iam_workload_identity_pool.github.name}/attribute.repository/${var.github_repo}"
 }
