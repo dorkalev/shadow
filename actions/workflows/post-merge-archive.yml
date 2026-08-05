@@ -1,8 +1,8 @@
 # Post-merge evidence archive — copy into .github/workflows/post-merge-archive.yml
 # On every merged PR: full JSON+MD record (PR, reviews, comments, checks, compliance
 # report) with bypass detection against the live branch ruleset, committed to the
-# protected compliance-archives branch. Only the GitHub Actions integration is
-# granted append authority; force-push and deletion remain blocked.
+# protected compliance-archives branch. Force-push and deletion are blocked;
+# every append is attributable and the verifier reconciles the full population.
 name: Post-Merge Archive
 
 on:
@@ -23,7 +23,7 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           fetch-depth: 0
-          # The archive ruleset permits only the GitHub Actions integration to append.
+          # The archive ruleset blocks history rewrite; this workflow appends the normal records.
 
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:

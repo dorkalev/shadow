@@ -21,7 +21,7 @@ Per repo:
 2. Create the `compliance-archives` orphan branch with a README explaining it is protected, tamper-evident evidence.
 3. Rulesets (`gh api -X POST /repos/{org}/{repo}/rulesets`):
    - **main**: require pull requests and status checks (`ci`, `dependency-review`, `compliance-audit`, `compliance-review-gate`), block force pushes and deletions, and require conversation resolution. An emergency founder bypass, if the plan permits one, is detected and documented per SDLC §9.
-   - **compliance-archives**: block force pushes and deletions. Permit only the designated GitHub Actions integration to append archive records directly; humans use reviewed changes.
+   - **compliance-archives**: block force pushes and deletions. The standard workflow appends records; GitHub audit logs attribute every direct append and reconciliation exposes missing or extra records. Do not claim the built-in `GITHUB_TOKEN` can be the sole bypass actor—repository rulesets do not accept that integration on every account/plan.
 
 ## Step 3 — CI gates (CC8.1)
 

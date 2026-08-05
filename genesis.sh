@@ -237,10 +237,10 @@ gh api -X POST "repos/$OWNER/$NAME/rulesets" --input - >/dev/null <<'JSON' && ok
           {"type":"required_status_checks","parameters":{"strict_required_status_checks_policy":true,"required_status_checks":[{"context":"ci"},{"context":"dependency-review"},{"context":"compliance-audit"},{"context":"compliance-review-gate"}]}},
           {"type":"non_fast_forward"},{"type":"deletion"}]}
 JSON
-gh api -X POST "repos/$OWNER/$NAME/rulesets" --input - >/dev/null <<'JSON' && ok "archive ruleset: only GitHub Actions may append; no force/delete" || warn "archive ruleset failed"
+gh api -X POST "repos/$OWNER/$NAME/rulesets" --input - >/dev/null <<'JSON' && ok "archive ruleset: append-only history (no force/delete); every actor remains attributable" || warn "archive ruleset failed"
 {"name":"shadow-compliance-archives","target":"branch","enforcement":"active",
  "conditions":{"ref_name":{"include":["refs/heads/compliance-archives"],"exclude":[]}},
- "bypass_actors":[{"actor_id":15368,"actor_type":"Integration","bypass_mode":"always"}],
+ "bypass_actors":[],
  "rules":[{"type":"non_fast_forward"},{"type":"deletion"}]}
 JSON
 

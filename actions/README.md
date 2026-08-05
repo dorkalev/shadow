@@ -43,7 +43,7 @@ For any audit window (`SINCE`/`UNTIL`): builds the change population from three 
 
 ### `shadow-ci archive` — the post-merge evidence record
 
-On every merged PR: one JSON + one MD record (full PR metadata, reviews, comments, check runs, files, commits, and the compliance comment verbatim) committed to protected **`compliance-archives`**. Required status checks are the union of active repository rulesets and classic branch protection, so any merge with a failed or missing required check is flagged `is_bypass: true`. The branch blocks force pushes and deletion; the designated Actions integration may append new records. This is tamper-evident source evidence for CC8.1, not a claim of legal immutability.
+On every merged PR: one JSON + one MD record (full PR metadata, reviews, comments, check runs, files, commits, and the compliance comment verbatim) committed to protected **`compliance-archives`**. Required status checks are the union of active repository rulesets and classic branch protection, so any merge with a failed or missing required check is flagged `is_bypass: true`. The branch blocks force pushes and deletion; normal records are appended by Actions, all writers remain attributable, and population reconciliation detects omissions/extras. This is tamper-evident source evidence for CC8.1, not a claim of legal immutability or exclusive machine write access.
 
 ## Distribution — three ways a repo consumes the shadow
 
@@ -68,7 +68,7 @@ Start vendored (works before this platform is even on GitHub); graduate to centr
    .github/pull_request_template.md  ← the 4 sections
    ```
 2. **Secrets**: LLM keys are optional (`ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, or `OPENAI_API_KEY`) and stay inert unless a repo variable explicitly enables the relevant LLM workflow. `LINEAR_API_KEY` is optional for ticket verification; `SLACK_WEBHOOK_URL` is optional for bypass/merge alerts.
-3. **Rulesets**: after the first green runs, require `ci`, `dependency-review`, `compliance-audit`, and `compliance-review-gate` on `main`; require PRs; block force pushes and deletion. Protect `compliance-archives` separately and grant only the Actions integration permission to append evidence directly.
+3. **Rulesets**: after the first green runs, require `ci`, `dependency-review`, `compliance-audit`, and `compliance-review-gate` on `main`; require PRs; block force pushes and deletion. Protect `compliance-archives` separately against force pushes and deletion; record/reconcile every append.
 4. **Tune** the env block in `compliance.yml`: `TICKET_PATTERN` (e.g. `#[0-9]+` for GitHub Issues), reviewers, `TEST_EXCLUDE_PATHS`.
 
 ## The workflows

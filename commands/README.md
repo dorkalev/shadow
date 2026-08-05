@@ -71,7 +71,7 @@ Emergency path (direct push to main):
 ```
 main                 production. ALL change PRs target main; required checks gate the merge.
 {TICKET-ID}-{slug}   one branch per ticket, off main.
-compliance-archives  protected evidence branch. Actions appends signed records; never merged anywhere.
+compliance-archives  protected evidence branch. Normal records come from Actions; every append is attributable; never merged anywhere.
 ```
 
 ## Tracker

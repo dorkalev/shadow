@@ -50,10 +50,11 @@ RELEASED_BY="<authenticated founder>" ARCHIVES_PUSH=1 \
 ```
 
 The record must be a new file under `releases/`; never edit an existing record.
-The `compliance-archives` ruleset rejects force pushes and deletion, and only
-the designated GitHub Actions integration may bypass its pull-request rule to
-append machine-created evidence. This is tamper-evident evidence, not a claim
-that GitHub storage is legally immutable.
+The `compliance-archives` ruleset rejects force pushes and deletion. The normal
+Actions workflow appends machine-created evidence, every append remains
+attributable in GitHub, and reconciliation exposes missing or extra records.
+This is tamper-evident evidence, not a claim that GitHub storage is legally
+immutable or that the built-in token is an exclusive writer.
 
 ## Phase 5: Close the loop
 
