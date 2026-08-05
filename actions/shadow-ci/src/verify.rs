@@ -753,4 +753,24 @@ mod tests {
         assert_eq!(s["dimensions"]["design"]["percent"], 100.0);
         assert_eq!(s["dimensions"]["technical"]["percent"], 0.0);
     }
+
+    #[test]
+    fn api_arrays_preserve_pass_fail_and_unknown() {
+        let pass = api_array("a", "p", &["CC7.1"], Ok(json!([])), "api", "now");
+        let fail = api_array("b", "p", &["CC7.1"], Ok(json!([{"id": 1}])), "api", "now");
+        let malformed = api_array("c", "p", &["CC7.1"], Ok(json!({"items": []})), "api", "now");
+        let unavailable = api_array("d", "p", &["CC7.1"], Err("denied".into()), "api", "now");
+        assert_eq!(pass["verdict"], "pass");
+        assert_eq!(fail["verdict"], "fail");
+        assert_eq!(malformed["verdict"], "unknown");
+        assert_eq!(unavailable["verdict"], "unknown");
+    }
+
+    #[test]
+    fn unconfigured_gcp_is_a_visible_blind_spot() {
+        let checks = gcp_observations(&[], "now");
+        assert_eq!(checks.len(), 5);
+        assert!(checks.iter().all(|check| check["verdict"] == "unknown"));
+        assert!(checks.iter().all(|check| check["source"] == "gcp"));
+    }
 }
