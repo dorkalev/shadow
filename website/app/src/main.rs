@@ -29,18 +29,32 @@ CREATE TABLE IF NOT EXISTS checks (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   criterion_id TEXT NOT NULL REFERENCES criteria(id),
   name TEXT NOT NULL, verdict TEXT NOT NULL, evidence TEXT,
-  last_run TEXT NOT NULL, UNIQUE(criterion_id, name));
+  last_run TEXT NOT NULL, procedure_id TEXT, dimension TEXT NOT NULL DEFAULT 'technical',
+  source TEXT, expires_at TEXT, UNIQUE(criterion_id, name));
 CREATE TABLE IF NOT EXISTS attestations (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   criterion_id TEXT NOT NULL, note TEXT NOT NULL, evidence_link TEXT,
   attested_by TEXT NOT NULL, attested_at TEXT NOT NULL, expires_at TEXT);
 CREATE TABLE IF NOT EXISTS gauge_history (
   ts TEXT PRIMARY KEY, gauge REAL NOT NULL, cap REAL, cap_reason TEXT);
+CREATE TABLE IF NOT EXISTS readiness_history (
+  ts TEXT PRIMARY KEY, design REAL NOT NULL, technical REAL NOT NULL,
+  evidence REAL NOT NULL, operating REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS procedures (
   id TEXT PRIMARY KEY, name TEXT NOT NULL, category TEXT NOT NULL,
   criteria TEXT NOT NULL, install TEXT NOT NULL, detect TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT 'not_installed', last_checked TEXT);
 ";
+
+fn ensure_schema(conn: &Connection) {
+    conn.execute_batch(SCHEMA).expect("schema");
+    // Forward-only migrations keep local dashboard caches readable. Failures
+    // mean the column already exists and are intentionally harmless.
+    let _ = conn.execute("ALTER TABLE checks ADD COLUMN procedure_id TEXT", []);
+    let _ = conn.execute("ALTER TABLE checks ADD COLUMN dimension TEXT NOT NULL DEFAULT 'technical'", []);
+    let _ = conn.execute("ALTER TABLE checks ADD COLUMN source TEXT", []);
+    let _ = conn.execute("ALTER TABLE checks ADD COLUMN expires_at TEXT", []);
+}
 
 enum Runner {
     None,
@@ -88,20 +102,53 @@ fn main() {
             let report = arg(&args, "--report", "shadow/verify.json");
             import_verify(&db_path, &report);
         }
+        Some("apply-scope") => {
+            let scope = arg(&args, "--scope", "shadow/scope.json");
+            apply_scope(&db_path, &scope);
+        }
         _ => {
             eprintln!("usage: shadow seed --criteria DIR --procedures FILE [--db PATH]");
             eprintln!("       shadow serve  [--db PATH] [--port 8300]");
             eprintln!("       shadow render [--db PATH] [--out dist]   # static export (index + criteria pages)");
             eprintln!("       shadow import-verify --db PATH --report verify.json");
+            eprintln!("       shadow apply-scope --db PATH --scope shadow/scope.json");
             std::process::exit(2);
         }
     }
+}
+
+#[derive(Deserialize)]
+struct ScopeConfig {
+    categories: Vec<String>,
+}
+
+fn apply_scope(db_path: &str, scope_path: &str) {
+    let config: ScopeConfig = serde_json::from_str(
+        &std::fs::read_to_string(scope_path).expect("read scope configuration"),
+    )
+    .expect("parse scope configuration");
+    let conn = Connection::open(db_path).expect("open db");
+    ensure_schema(&conn);
+    conn.execute("UPDATE criteria SET in_scope=0", []).expect("reset scope");
+    for category in &config.categories {
+        let normalized = match category.as_str() {
+            "processing" | "processing-integrity" => "processing_integrity",
+            other => other,
+        };
+        conn.execute("UPDATE criteria SET in_scope=1 WHERE category=?1", [normalized])
+            .expect("apply scope category");
+    }
+    println!("applied {} scope category(s) from {scope_path}", config.categories.len());
 }
 
 // ---------- deterministic verifier import ----------
 
 #[derive(Deserialize)]
 struct VerifyReport {
+    #[serde(default)]
+    schema_version: u8,
+    #[serde(default)]
+    observed_at: String,
     checks: Vec<VerifyCheck>,
 }
 
@@ -109,28 +156,85 @@ struct VerifyReport {
 struct VerifyCheck {
     id: String,
     verdict: String,
+    #[serde(default)]
     evidence: String,
+    #[serde(default)]
+    criteria: Vec<String>,
+    #[serde(default)]
+    procedure_id: Option<String>,
+    #[serde(default = "default_dimension")]
+    dimension: String,
+    #[serde(default)]
+    source: Option<String>,
+    #[serde(default)]
+    observed_at: Option<String>,
+    #[serde(default)]
+    expires_at: Option<String>,
 }
 
-fn criteria_for_verify_check(check: &str) -> &'static [&'static str] {
+fn default_dimension() -> String {
+    "technical".into()
+}
+
+fn criteria_for_legacy_verify_check(check: &str) -> Vec<String> {
     match check {
-        "github.org_2fa_required" => &["CC6.1", "CC6.2"],
-        id if id.starts_with("github.branch_protection.") => &["CC8.1"],
-        "github.open_dependabot_alerts" | "github.open_code_scanning_alerts" | "github.open_secret_scanning_alerts" => &["CC7.1"],
-        _ => &[],
+        "github.org_2fa_required" => vec!["CC6.1".into(), "CC6.2".into()],
+        id if id.starts_with("github.branch_protection.") => vec!["CC8.1".into()],
+        "github.open_dependabot_alerts" | "github.open_code_scanning_alerts" | "github.open_secret_scanning_alerts" => vec!["CC7.1".into()],
+        _ => vec![],
     }
 }
 
-fn criterion_status(verdict: &str) -> Option<(&'static str, f64, u8)> {
-    match verdict {
-        "pass" => Some(("verified", 1.0, 1)),
-        // A permission/API blind spot is evidence of no verified control, not
-        // partial implementation. Keep it visibly unknown in `checks` but do
-        // not let it move the SOC 2 gauge.
-        "unknown" => Some(("not_started", 0.0, 2)),
-        "n/a" => None,
-        _ => Some(("failing", 0.0, 3)),
+#[derive(Default)]
+struct CriterionEvidence {
+    pass_design: bool,
+    pass_evidence: bool,
+    pass_operating: bool,
+    failed: bool,
+}
+
+fn status_for_evidence(state: &CriterionEvidence) -> (&'static str, f64) {
+    if state.failed {
+        ("failing", 0.0)
+    } else if state.pass_operating {
+        ("verified", 1.0)
+    } else if state.pass_design || state.pass_evidence {
+        ("implemented", 0.6)
+    } else {
+        ("not_started", 0.0)
     }
+}
+
+fn readiness_metrics(conn: &Connection) -> (f64, f64, f64, f64) {
+    let total: f64 = conn
+        .query_row("SELECT COALESCE(SUM(weight), 0) FROM criteria WHERE in_scope=1", [], |r| r.get(0))
+        .unwrap_or(0.0);
+    let weighted = |dimension_sql: &str| -> f64 {
+        if total == 0.0 {
+            return 0.0;
+        }
+        let sql = format!(
+            "SELECT COALESCE(SUM(c.weight), 0) * 100.0 / ?1 FROM criteria c
+             WHERE c.in_scope=1 AND EXISTS (
+               SELECT 1 FROM checks ch WHERE ch.criterion_id=c.id AND ch.verdict='pass' AND {dimension_sql}
+             ) AND NOT EXISTS (
+               SELECT 1 FROM checks ch WHERE ch.criterion_id=c.id AND ch.verdict='fail' AND {dimension_sql}
+             )"
+        );
+        conn.query_row(&sql, [total], |r| r.get(0)).unwrap_or(0.0)
+    };
+    let design = weighted("ch.dimension='design'");
+    let evidence = weighted("1=1");
+    let operating = weighted("ch.dimension IN ('technical','operating')");
+    let technical: f64 = conn
+        .query_row(
+            "SELECT COALESCE(SUM(CASE WHEN verdict='pass' THEN 1.0 ELSE 0.0 END) * 100.0 / NULLIF(COUNT(*),0), 0)
+             FROM checks WHERE dimension='technical' AND verdict != 'n/a'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0.0);
+    (design, technical, evidence, operating)
 }
 
 fn import_verify(db_path: &str, report_path: &str) {
@@ -140,46 +244,85 @@ fn import_verify(db_path: &str, report_path: &str) {
     .expect("parse deterministic verify report");
     let check_count = report.checks.len();
     let conn = Connection::open(db_path).expect("open db");
-    conn.execute_batch(SCHEMA).expect("schema");
-    let ts = std::process::Command::new("date")
+    ensure_schema(&conn);
+    let fallback_ts = std::process::Command::new("date")
         .args(["-u", "+%Y-%m-%dT%H:%M:%SZ"])
         .output()
         .ok()
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .unwrap_or_else(|| "unknown".into());
-    let mut worst: HashMap<&str, (&str, f64, u8)> = HashMap::new();
+    let ts = if report.observed_at.is_empty() { fallback_ts } else { report.observed_at.clone() };
+    let mut evidence_by_criterion: HashMap<String, CriterionEvidence> = HashMap::new();
+    let mut procedure_state: HashMap<String, (&str, u8)> = HashMap::new();
     let mut cap_reason = None;
 
-    for check in report.checks {
-        let status = criterion_status(&check.verdict);
+    // A readiness report is a complete current snapshot. Clearing the render
+    // cache prevents retired checks from surviving forever as ghost evidence.
+    conn.execute("DELETE FROM checks", []).expect("clear old checks");
+    conn.execute("UPDATE criteria SET status='not_started', credit=0.0, updated_at=?1", [&ts])
+        .expect("reset criterion cache");
+
+    for check in &report.checks {
         if (check.id == "github.org_2fa_required" || check.id.starts_with("github.branch_protection."))
             && check.verdict == "fail"
         {
             cap_reason = Some(check.id.clone());
         }
-        for &criterion in criteria_for_verify_check(&check.id) {
+        let criteria = if check.criteria.is_empty() {
+            criteria_for_legacy_verify_check(&check.id)
+        } else {
+            check.criteria.clone()
+        };
+        let observed = check.observed_at.as_deref().unwrap_or(&ts);
+        for criterion in criteria {
             conn.execute(
-                "INSERT INTO checks (criterion_id, name, verdict, evidence, last_run) VALUES (?1,?2,?3,?4,?5)
-                 ON CONFLICT(criterion_id, name) DO UPDATE SET verdict=?3, evidence=?4, last_run=?5",
-                params![criterion, &check.id, &check.verdict, &check.evidence, &ts],
+                "INSERT INTO checks (criterion_id, name, verdict, evidence, last_run, procedure_id, dimension, source, expires_at)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)
+                 ON CONFLICT(criterion_id, name) DO UPDATE SET verdict=?3, evidence=?4, last_run=?5,
+                   procedure_id=?6, dimension=?7, source=?8, expires_at=?9",
+                params![criterion, &check.id, &check.verdict, &check.evidence, observed,
+                    &check.procedure_id, &check.dimension, &check.source, &check.expires_at],
             )
             .expect("upsert check");
-            if let Some(status) = status {
-                match worst.get(criterion) {
-                    Some((_, _, rank)) if *rank >= status.2 => {}
-                    _ => {
-                        worst.insert(criterion, status);
-                    }
+            let state = evidence_by_criterion.entry(criterion).or_default();
+            match check.verdict.as_str() {
+                "fail" => state.failed = true,
+                "pass" if check.dimension == "design" => state.pass_design = true,
+                "pass" if check.dimension == "evidence" => state.pass_evidence = true,
+                "pass" if check.dimension == "technical" || check.dimension == "operating" => state.pass_operating = true,
+                _ => {}
+            }
+        }
+        if let Some(procedure) = &check.procedure_id {
+            let next = match check.verdict.as_str() {
+                "fail" => Some(("failing", 3)),
+                "pass" if check.dimension == "design" => Some(("installed", 1)),
+                "pass" => Some(("verified", 2)),
+                _ => None,
+            };
+            if let Some(next) = next {
+                if procedure_state.get(procedure).map_or(true, |(_, rank)| *rank < next.1) {
+                    procedure_state.insert(procedure.clone(), next);
                 }
             }
         }
     }
-    for (criterion, (status, credit, _)) in worst {
+    for (criterion, state) in evidence_by_criterion {
+        let (status, credit) = status_for_evidence(&state);
         conn.execute(
             "UPDATE criteria SET status=?2, credit=?3, updated_at=?4 WHERE id=?1",
             params![criterion, status, credit, ts],
         )
         .expect("update criterion");
+    }
+    conn.execute("UPDATE procedures SET status='not_installed', last_checked=?1", [&ts])
+        .expect("reset procedures");
+    for (procedure, (status, _)) in procedure_state {
+        conn.execute(
+            "UPDATE procedures SET status=?2, last_checked=?3 WHERE id=?1",
+            params![procedure, status, ts],
+        )
+        .expect("update procedure");
     }
     let gauge: f64 = conn
         .query_row(
@@ -194,7 +337,13 @@ fn import_verify(db_path: &str, report_path: &str) {
         params![ts, gauge, cap, cap_reason],
     )
     .expect("record gauge");
-    println!("imported {check_count} deterministic checks; gauge {gauge:.1}%");
+    let (design, technical, evidence, operating) = readiness_metrics(&conn);
+    conn.execute(
+        "INSERT OR REPLACE INTO readiness_history (ts, design, technical, evidence, operating) VALUES (?1,?2,?3,?4,?5)",
+        params![ts, design, technical, evidence, operating],
+    )
+    .expect("record readiness dimensions");
+    println!("imported schema v{}: {check_count} checks; gauge {gauge:.1}%; design {design:.1}%; technical {technical:.1}%; evidence {evidence:.1}%; operating {operating:.1}%", report.schema_version);
 }
 
 // ---------- seeding: the markdown corpus is the source of truth ----------
@@ -242,7 +391,7 @@ fn parse_criterion_md(body: &str) -> Option<(String, String, String, i64, String
 
 fn seed(db_path: &str, criteria_dir: &str, procedures_md: &str) {
     let conn = Connection::open(db_path).expect("open db");
-    conn.execute_batch(SCHEMA).expect("schema");
+    ensure_schema(&conn);
     // migrate pre-existing DBs; harmless failure if the column already exists
     let _ = conn.execute("ALTER TABLE criteria ADD COLUMN automatable TEXT NOT NULL DEFAULT 'partial'", []);
     let _ = conn.execute("ALTER TABLE criteria ADD COLUMN nature TEXT NOT NULL DEFAULT 'technical'", []);
@@ -546,7 +695,18 @@ fn load_model(conn: &Connection, org: &str) -> render::Model {
         .query_row("SELECT COUNT(*) FROM checks WHERE verdict='unknown'", [], |r| r.get(0))
         .unwrap_or(0);
 
-    render::Model { org: org.to_string(), gauge, criteria, procedures, unknown_checks }
+    let readiness = conn
+        .query_row(
+            "SELECT design, technical, evidence, operating FROM readiness_history ORDER BY ts DESC LIMIT 1",
+            [],
+            |r| Ok(render::Readiness { design: r.get(0)?, technical: r.get(1)?, evidence: r.get(2)?, operating: r.get(3)? }),
+        )
+        .unwrap_or_else(|_| {
+            let (design, technical, evidence, operating) = readiness_metrics(conn);
+            render::Readiness { design, technical, evidence, operating }
+        });
+
+    render::Model { org: org.to_string(), gauge, readiness, criteria, procedures, unknown_checks }
 }
 
 // ---------- routes ----------
@@ -629,11 +789,11 @@ async fn criterion(State(app): State<Arc<App>>, Path(id): Path<String>) -> impl 
     let mut checks = Vec::new();
     {
         let mut stmt = conn
-            .prepare("SELECT name, verdict, evidence, last_run FROM checks WHERE criterion_id=?1 ORDER BY name")
+            .prepare("SELECT name, verdict, evidence, last_run, dimension, source, expires_at FROM checks WHERE criterion_id=?1 ORDER BY name")
             .unwrap();
         let rows = stmt
             .query_map([&id], |r| {
-                Ok(render::CheckRow { name: r.get(0)?, verdict: r.get(1)?, evidence: r.get(2)?, last_run: r.get(3)? })
+                Ok(render::CheckRow { name: r.get(0)?, verdict: r.get(1)?, evidence: r.get(2)?, last_run: r.get(3)?, dimension: r.get(4)?, source: r.get(5)?, expires_at: r.get(6)? })
             })
             .unwrap();
         for row in rows {
@@ -682,7 +842,7 @@ async fn export_db(State(app): State<Arc<App>>, headers: HeaderMap) -> impl Into
 
 fn serve(db_path: String, port: u16) {
     let conn = Connection::open(&db_path).expect("open db");
-    conn.execute_batch(SCHEMA).expect("schema");
+    ensure_schema(&conn);
     let runner = match std::env::var("SHADOW_RUNNER") {
         Ok(cmd) if !cmd.is_empty() => Runner::Shell(cmd),
         _ => {
@@ -725,7 +885,7 @@ fn serve(db_path: String, port: u16) {
 // evidence — publishable as an Actions artifact or (opt-in) GitHub Pages.
 fn render_static(db_path: &str, out: &str) {
     let conn = Connection::open(db_path).expect("open db");
-    conn.execute_batch(SCHEMA).expect("schema");
+    ensure_schema(&conn);
     let org = std::env::var("SHADOW_ORG").unwrap_or_else(|_| "unnamed org".into());
     let model = load_model(&conn, &org);
 
@@ -745,11 +905,11 @@ fn render_static(db_path: &str, out: &str) {
     for c in &model.criteria {
         let mut checks = Vec::new();
         let mut stmt = conn
-            .prepare("SELECT name, verdict, evidence, last_run FROM checks WHERE criterion_id=?1 ORDER BY name")
+            .prepare("SELECT name, verdict, evidence, last_run, dimension, source, expires_at FROM checks WHERE criterion_id=?1 ORDER BY name")
             .unwrap();
         let rows = stmt
             .query_map([&c.id], |r| {
-                Ok(render::CheckRow { name: r.get(0)?, verdict: r.get(1)?, evidence: r.get(2)?, last_run: r.get(3)? })
+                Ok(render::CheckRow { name: r.get(0)?, verdict: r.get(1)?, evidence: r.get(2)?, last_run: r.get(3)?, dimension: r.get(4)?, source: r.get(5)?, expires_at: r.get(6)? })
             })
             .unwrap();
         for row in rows {
@@ -785,16 +945,19 @@ mod tests {
 
     #[test]
     fn deterministic_checks_map_only_to_owned_criteria() {
-        assert_eq!(criteria_for_verify_check("github.org_2fa_required"), ["CC6.1", "CC6.2"]);
-        assert_eq!(criteria_for_verify_check("github.branch_protection.main"), ["CC8.1"]);
-        assert!(criteria_for_verify_check("unknown").is_empty());
+        assert_eq!(criteria_for_legacy_verify_check("github.org_2fa_required"), ["CC6.1", "CC6.2"]);
+        assert_eq!(criteria_for_legacy_verify_check("github.branch_protection.main"), ["CC8.1"]);
+        assert!(criteria_for_legacy_verify_check("unknown").is_empty());
     }
 
     #[test]
-    fn verifier_verdicts_never_turn_unknown_into_verified() {
-        assert_eq!(criterion_status("pass"), Some(("verified", 1.0, 1)));
-        assert_eq!(criterion_status("unknown"), Some(("not_started", 0.0, 2)));
-        assert_eq!(criterion_status("fail"), Some(("failing", 0.0, 3)));
-        assert_eq!(criterion_status("n/a"), None);
+    fn evidence_credit_is_conservative() {
+        assert_eq!(status_for_evidence(&CriterionEvidence::default()), ("not_started", 0.0));
+        let design = CriterionEvidence { pass_design: true, ..CriterionEvidence::default() };
+        assert_eq!(status_for_evidence(&design), ("implemented", 0.6));
+        let operating = CriterionEvidence { pass_operating: true, ..CriterionEvidence::default() };
+        assert_eq!(status_for_evidence(&operating), ("verified", 1.0));
+        let conflict = CriterionEvidence { pass_operating: true, failed: true, ..CriterionEvidence::default() };
+        assert_eq!(status_for_evidence(&conflict), ("failing", 0.0));
     }
 }

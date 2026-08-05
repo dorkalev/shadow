@@ -17,6 +17,8 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -27,10 +29,11 @@ jobs:
       - name: Build shadow-ci
         run: cargo build --release --manifest-path .shadow/ci/Cargo.toml
 
-      - name: Verify live GitHub controls
+      - name: Verify repository, GitHub, and configured cloud controls
         env:
           GH_TOKEN: ${{ secrets.ORG_READ_TOKEN || secrets.GITHUB_TOKEN }}
           SHADOW_BRANCHES: "main,staging"
+          GCP_PROJECTS: ${{ vars.GCP_PROJECTS }}
         run: .shadow/ci/target/release/shadow-ci verify
 
       - name: Build static dashboard snapshot
@@ -43,9 +46,13 @@ jobs:
             --criteria .shadow/criteria \
             --procedures .shadow/procedures/PROCEDURES.md \
             --db shadow/shadow.db
+          if [ -f shadow/scope.json ]; then
+            .shadow/site/target/release/shadow apply-scope \
+              --db shadow/shadow.db --scope shadow/scope.json
+          fi
           .shadow/site/target/release/shadow import-verify \
             --db shadow/shadow.db \
-            --report shadow/verify-$(date -u +%F).json
+            --report shadow/readiness-latest.json
           .shadow/site/target/release/shadow render --db shadow/shadow.db --out dist
 
       - name: Upload verification evidence
@@ -53,7 +60,10 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: deterministic-shadow-verify-${{ github.run_id }}
-          path: shadow/verify-*.json
+          path: |
+            shadow/verify-*.json
+            shadow/readiness-*.json
+            shadow/shadow.db
           retention-days: 400
           if-no-files-found: error
 

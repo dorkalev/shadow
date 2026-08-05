@@ -4,7 +4,8 @@
 #   ./genesis.sh                                    create shadow-genesis-<ts> (private), run the full story
 #   ./genesis.sh --name myrepo --public             pick name/visibility
 #   ./genesis.sh --gcp-project P --alert-email E    ALSO provision the Firestore runtime (terraform apply)
-#   ./genesis.sh --only CC6                         limit the criteria half (tames the LLM bill)
+#   ./genesis.sh --deep-llm                         opt into the legacy paid semantic review
+#   ./genesis.sh --only CC6                         limit that optional deep review
 #
 # The story (nothing is simulated — synthetic content, real controls):
 #   1. create a brand-new GitHub repo, main + staging
@@ -12,17 +13,17 @@
 #   3. (optional) terraform-apply the Firestore runtime, WIF-bound to this repo
 #   4. open a REAL issue, branch, commit, push
 #   5. non-compliant PR → gate REJECTS (negative control) → fix → gate PASSES → merge → archive
-#   6. JUDGMENT: verify ALL criteria against the new repo (+ Firestore project);
-#      failures open real gh issues; the board goes green/red in your browser
+#   6. JUDGMENT: build the deterministic readiness ledger + dashboard against
+#      the new repo (+ Firestore project); optional paid semantic review is explicit
 #
-# Afterward, from inside the new repo, ./judgment.sh re-runs the route + all criteria any time.
+# Afterward, from inside the new repo, ./judgment.sh re-runs the route + snapshot any time.
 #
-# Needs: gh (authenticated), git, cargo, sqlite3, curl, claude; +terraform+gcloud for --gcp-project.
+# Needs: gh (authenticated), git, cargo, sqlite3, curl; +terraform+gcloud for --gcp-project.
 set -euo pipefail
 cd "$(dirname "$0")"
 
 NAME="shadow-genesis-$(date -u +%Y%m%d-%H%M%S)"; VIS="--private"
-GCP_PROJECT=""; REGION="us-central1"; ALERT_EMAIL=""; ONLY=""
+GCP_PROJECT=""; REGION="us-central1"; ALERT_EMAIL=""; ONLY=""; DEEP_LLM=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --name) NAME="$2"; shift ;;
@@ -31,6 +32,7 @@ while [ $# -gt 0 ]; do
     --region) REGION="$2"; shift ;;
     --alert-email) ALERT_EMAIL="$2"; shift ;;
     --only) ONLY="$2"; shift ;;
+    --deep-llm) DEEP_LLM=1 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
   shift
@@ -41,6 +43,7 @@ fi
 
 if [ -t 1 ]; then G=$'\033[32m'; R=$'\033[31m'; Y=$'\033[33m'; B=$'\033[1m'; D=$'\033[2m'; N=$'\033[0m'; else G=""; R=""; Y=""; B=""; D=""; N=""; fi
 log()  { printf '%s[%s]%s %s\n' "$D" "$(date -u +%H:%M:%S)" "$N" "$*"; }
+info() { printf '%s[%s]%s   %s%s%s\n' "$D" "$(date -u +%H:%M:%S)" "$N" "$D" "$*" "$N"; }
 step() { printf '%s[%s]%s %s▶ %s%s\n' "$D" "$(date -u +%H:%M:%S)" "$N" "$B" "$*" "$N"; }
 ok()   { printf '%s[%s]%s   %s✓ %s%s\n' "$D" "$(date -u +%H:%M:%S)" "$N" "$G" "$*" "$N"; }
 warn() { printf '%s[%s]%s   %s⚠ %s%s\n' "$D" "$(date -u +%H:%M:%S)" "$N" "$Y" "$*" "$N"; }
@@ -49,12 +52,12 @@ bad()  { printf '%s[%s]%s   %s✗ %s%s\n' "$D" "$(date -u +%H:%M:%S)" "$N" "$R" 
 # ---------- preflight doctor: fail fast with the whole shopping list ----------
 step "preflight — checking prerequisites before touching your account"
 MISSING=""
-for dep in gh git cargo sqlite3 curl claude jq; do
+for dep in gh git cargo sqlite3 curl jq; do
   command -v "$dep" >/dev/null || MISSING="$MISSING $dep"
 done
 if [ -n "$MISSING" ]; then
   bad "missing tools:$MISSING"
-  info "install: rust (cargo) via rustup · gh via brew · claude via 'npm i -g @anthropic-ai/claude-code' · jq via brew"
+  info "install: rust (cargo) via rustup · gh via brew · jq via brew"
   exit 1
 fi
 gh auth status >/dev/null 2>&1 || { bad "gh not authenticated — run: gh auth login (choose HTTPS + browser so the token gets 'workflow' scope)"; exit 1; }
@@ -64,8 +67,10 @@ if ! gh auth status 2>&1 | grep -q "'workflow'"; then
   warn "your gh token may lack the 'workflow' scope — pushing workflow files can be rejected"
   info "if the install push fails, run: gh auth refresh -s workflow  and re-run"
 fi
-command -v claude >/dev/null && claude --version >/dev/null 2>&1 || warn "claude is installed but 'claude --version' failed — ensure it is logged in (the criteria half needs it)"
-[ -n "${ANTHROPIC_API_KEY:-}" ] || warn "ANTHROPIC_API_KEY not exported — optional deep reviews and rituals remain disabled (the deterministic controls still run)"
+if [ "$DEEP_LLM" = 1 ]; then
+  command -v claude >/dev/null && claude --version >/dev/null 2>&1 || { bad "--deep-llm requires a working claude CLI"; exit 1; }
+  [ -n "${ANTHROPIC_API_KEY:-}" ] || warn "ANTHROPIC_API_KEY not exported — the CLI must already be authenticated"
+fi
 case "$VIS" in
   --private) warn "PRIVATE repo: secret scanning & branch rulesets need a paid plan / GH Advanced Security — they'll warn-and-skip. Use --public for a fully-green demo on a free account." ;;
 esac
@@ -99,6 +104,8 @@ cp "$PLATFORM"/commands/*.md .shadow/commands/
 cp "$PLATFORM/judgment.sh" ./judgment.sh && chmod +x judgment.sh
 cp "$PLATFORM/testimony.sh" ./testimony.sh && chmod +x testimony.sh
 cp "$PLATFORM/atonement.sh" ./atonement.sh && chmod +x atonement.sh
+mkdir -p evidence/attestations
+cp "$PLATFORM/evidence/attestations/README.md" evidence/attestations/README.md
 mkdir -p .shadow/provision && cp "$PLATFORM/provision/guided.mjs" .shadow/provision/guided.mjs
 # the Clock — the long-term machinery, not just the birth certificate:
 cp "$PLATFORM/actions/workflows/deterministic-verify.yml" .github/workflows/ # drift detector (24h, no LLM)
@@ -207,8 +214,11 @@ EOF
 fi
 
 # ---------- 4. judgment: the route (three controls) + every criterion ----------
-step "JUDGMENT — negative/positive controls on the route, then all criteria${GCP_PROJECT:+ against $GCP_PROJECT}"
-./judgment.sh ${ONLY:+--only "$ONLY"}
+step "JUDGMENT — negative/positive controls, then zero-model readiness${GCP_PROJECT:+ against $GCP_PROJECT}"
+JUDGMENT_ARGS=()
+[ "$DEEP_LLM" = 1 ] && JUDGMENT_ARGS+=(--deep-llm)
+[ -n "$ONLY" ] && JUDGMENT_ARGS+=(--only "$ONLY")
+./judgment.sh "${JUDGMENT_ARGS[@]}"
 
 # ---------- 5. lock the doors (the check contexts now exist) ----------
 step "locking the doors: branch rulesets (now that the check contexts exist)"

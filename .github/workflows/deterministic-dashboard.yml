@@ -45,9 +45,13 @@ jobs:
             --criteria criteria \
             --procedures procedures/PROCEDURES.md \
             --db shadow/shadow.db
+          if [ -f shadow/scope.json ]; then
+            website/app/target/release/shadow apply-scope \
+              --db shadow/shadow.db --scope shadow/scope.json
+          fi
           website/app/target/release/shadow import-verify \
             --db shadow/shadow.db \
-            --report shadow/verify-$(date -u +%F).json
+            --report shadow/readiness-latest.json
           website/app/target/release/shadow render --db shadow/shadow.db --out dist
 
       - name: Upload dashboard and verification evidence
@@ -58,5 +62,7 @@ jobs:
           path: |
             dist/
             shadow/verify-*.json
+            shadow/readiness-*.json
+            shadow/shadow.db
           retention-days: 400
           if-no-files-found: error
