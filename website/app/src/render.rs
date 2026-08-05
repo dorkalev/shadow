@@ -1066,6 +1066,10 @@ pub fn detail(c: &Crit, checks: &[CheckRow], atts: &[Attestation]) -> String {
 mod tests {
     use super::*;
 
+    fn corpus_path(source: &'static str, vendored: &'static str) -> &'static str {
+        if std::path::Path::new(source).exists() { source } else { vendored }
+    }
+
     // "CC3.1–CC3.4" (en dash range) → CC3.1, CC3.2, CC3.3, CC3.4; plain ids pass through
     fn expand(tag: &str) -> Vec<String> {
         let tag = tag.trim();
@@ -1087,8 +1091,9 @@ mod tests {
     #[test]
     fn map_covers_all_criteria() {
         // ground truth: the criterion files themselves
-        let mut all: std::collections::BTreeSet<String> = std::fs::read_dir("../../criteria")
-            .expect("run tests from website/app (criteria dir not found)")
+        let mut all: std::collections::BTreeSet<String> =
+            std::fs::read_dir(corpus_path("../../criteria", "../criteria"))
+            .expect("criteria corpus not found in source or vendored layout")
             .filter_map(|e| {
                 let name = e.ok()?.file_name().into_string().ok()?;
                 name.strip_suffix(".md").map(str::to_string)
@@ -1114,8 +1119,9 @@ mod tests {
 
     #[test]
     fn labels_cover_all_criteria() {
-        let all: std::collections::BTreeSet<String> = std::fs::read_dir("../../criteria")
-            .expect("run tests from website/app")
+        let all: std::collections::BTreeSet<String> =
+            std::fs::read_dir(corpus_path("../../criteria", "../criteria"))
+            .expect("criteria corpus not found in source or vendored layout")
             .filter_map(|e| {
                 let name = e.ok()?.file_name().into_string().ok()?;
                 name.strip_suffix(".md").map(str::to_string)
@@ -1143,8 +1149,11 @@ mod tests {
             }
         }
         // ground truth: the procedure IDs in procedures/PROCEDURES.md
-        let md = std::fs::read_to_string("../../procedures/PROCEDURES.md")
-            .expect("run tests from website/app");
+        let md = std::fs::read_to_string(corpus_path(
+            "../../procedures/PROCEDURES.md",
+            "../procedures/PROCEDURES.md",
+        ))
+        .expect("procedure corpus not found in source or vendored layout");
         let defined: std::collections::BTreeSet<String> = md
             .lines()
             .filter_map(|l| {
