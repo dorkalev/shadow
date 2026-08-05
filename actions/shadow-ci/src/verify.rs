@@ -205,17 +205,18 @@ fn first_existing(root: &Path, paths: &[&str]) -> Option<PathBuf> {
 }
 
 fn complete_artifact_under(root: &Path, relative: &str, needle: &str) -> Option<PathBuf> {
-    fn walk(dir: &Path, needle: &str) -> Option<PathBuf> {
+    fn walk(dir: &Path, scan_root: &Path, needle: &str) -> Option<PathBuf> {
         let Ok(entries) = std::fs::read_dir(dir) else {
             return None;
         };
         for entry in entries.flatten() {
             let path = entry.path();
-            let name_matches = path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .is_some_and(|n| n.to_lowercase().contains(needle));
-            if path.is_file() && name_matches {
+            let relative_path = path.strip_prefix(scan_root).unwrap_or(&path);
+            let path_matches = relative_path
+                .to_string_lossy()
+                .to_lowercase()
+                .contains(needle);
+            if path.is_file() && path_matches {
                 let body = std::fs::read_to_string(&path).unwrap_or_default();
                 let lower = body.to_lowercase();
                 if body.trim().len() >= 80
@@ -226,14 +227,15 @@ fn complete_artifact_under(root: &Path, relative: &str, needle: &str) -> Option<
                 }
             }
             if path.is_dir() {
-                if let Some(found) = walk(&path, needle) {
+                if let Some(found) = walk(&path, scan_root, needle) {
                     return Some(found);
                 }
             }
         }
         None
     }
-    walk(&root.join(relative), &needle.to_lowercase())
+    let scan_root = root.join(relative);
+    walk(&scan_root, &scan_root, &needle.to_lowercase())
 }
 
 fn attestation_observations(root: &Path, observed_at: &str) -> Vec<Value> {
@@ -1354,5 +1356,26 @@ mod tests {
         assert!(FIREBASE_RULE_TEST_PATHS.contains(&"app/test/firestore.rules.test.ts"));
         assert!(DEPENDENCY_LOCK_PATHS.contains(&"app/package-lock.json"));
         assert!(DEPENDENCY_LOCK_PATHS.contains(&"functions/package-lock.json"));
+    }
+
+    #[test]
+    fn evidence_directory_name_can_identify_a_complete_artifact() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/evidence-path-test");
+        if root.exists() {
+            std::fs::remove_dir_all(&root).unwrap();
+        }
+        let artifact = root.join("evidence/restore-tests/2026-Q3.md");
+        std::fs::create_dir_all(artifact.parent().unwrap()).unwrap();
+        std::fs::write(
+            &artifact,
+            "# Restore test\n\nPerformed: 2026-08-05\nResult: PASS\nA real isolated restore completed successfully and the temporary database was removed.",
+        )
+        .unwrap();
+
+        assert_eq!(
+            complete_artifact_under(&root, "evidence", "restore"),
+            Some(artifact)
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
 }
