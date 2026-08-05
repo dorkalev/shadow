@@ -1360,11 +1360,10 @@ mod tests {
 
     #[test]
     fn evidence_directory_name_can_identify_a_complete_artifact() {
-        let suffix = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!("shadow-evidence-path-{suffix}"));
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/evidence-path-test");
+        if root.exists() {
+            std::fs::remove_dir_all(&root).unwrap();
+        }
         let artifact = root.join("evidence/restore-tests/2026-Q3.md");
         std::fs::create_dir_all(artifact.parent().unwrap()).unwrap();
         std::fs::write(
