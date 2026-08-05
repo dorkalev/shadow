@@ -70,3 +70,9 @@ that permission, set `ARCHIVES_PUSH=1`, `ARCHIVES_BRANCH=compliance-archives`,
 and grant the workflow `contents: write`. GCP live checks likewise require an
 explicit Workload Identity Federation configuration; absent credentials remain
 visible as `unknown` and receive zero credit.
+
+Use separate repository-scoped WIF identities for deployment and verification:
+`GCP_DEPLOY_SA` may deploy after protected merges, while `GCP_VERIFY_SA` receives
+only Security Reviewer, Datastore Viewer, Monitoring Viewer, and Logs Viewer.
+Never reuse the deployer for daily verification. The workflow exchanges
+short-lived OIDC credentials and stores no service-account key.

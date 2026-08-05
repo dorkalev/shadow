@@ -10,6 +10,26 @@ use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
+const FIREBASE_RULE_TEST_PATHS: &[&str] = &[
+    "app/test/firestore.rules.test.ts",
+    "test/firestore.rules.test.ts",
+    "tests/firestore.rules.test.ts",
+    "functions/test/firestore.rules.test.ts",
+];
+
+const DEPENDENCY_LOCK_PATHS: &[&str] = &[
+    "package-lock.json",
+    "pnpm-lock.yaml",
+    "yarn.lock",
+    "Cargo.lock",
+    "app/package-lock.json",
+    "app/pnpm-lock.yaml",
+    "app/yarn.lock",
+    "functions/package-lock.json",
+    "functions/pnpm-lock.yaml",
+    "functions/yarn.lock",
+];
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Verdict {
     Pass,
@@ -654,7 +674,7 @@ pub fn run_verify() -> Result<i32, String> {
     {
         checks.push(file_check(&root, "firebase.configuration", None, &["CC5.2", "CC8.1"], &["firebase.json"], &observed_at));
         checks.push(firestore_rules_check(&root, &observed_at));
-        checks.push(file_check(&root, "firebase.rules_tests", Some("ci-tests"), &["CC6.1", "CC6.3", "CC8.1"], &["test/firestore.rules.test.ts", "tests/firestore.rules.test.ts", "functions/test/firestore.rules.test.ts"], &observed_at));
+        checks.push(file_check(&root, "firebase.rules_tests", Some("ci-tests"), &["CC6.1", "CC6.3", "CC8.1"], FIREBASE_RULE_TEST_PATHS, &observed_at));
     } else {
         for (id, criteria) in [
             ("firebase.configuration", &["CC5.2", "CC8.1"][..]),
@@ -665,7 +685,7 @@ pub fn run_verify() -> Result<i32, String> {
         }
     }
     checks.push(file_contains_check(&root, "gcp.keyless_deploy", "ci-tests", &["CC6.1", "CC6.3", "CC8.1"], ".github/workflows/deploy.yml", &["google-github-actions/auth", "workload_identity_provider", "service_account"], &observed_at));
-    checks.push(file_check(&root, "repo.dependency_lock", Some("dependabot"), &["CC7.1", "CC8.1"], &["package-lock.json", "pnpm-lock.yaml", "yarn.lock", "Cargo.lock"], &observed_at));
+    checks.push(file_check(&root, "repo.dependency_lock", Some("dependabot"), &["CC7.1", "CC8.1"], DEPENDENCY_LOCK_PATHS, &observed_at));
 
     let restore_present = any_under(&root, "evidence", "restore");
     checks.push(observation("evidence.restore_test", Some("restore-test"), &["A1.3"], "operating", if restore_present { Verdict::Pass } else { Verdict::Fail }, if restore_present { "restore-test evidence exists" } else { "no restore-test evidence found" }, "repo:evidence", &observed_at));
@@ -772,5 +792,12 @@ mod tests {
         assert_eq!(checks.len(), 5);
         assert!(checks.iter().all(|check| check["verdict"] == "unknown"));
         assert!(checks.iter().all(|check| check["source"] == "gcp"));
+    }
+
+    #[test]
+    fn common_monorepo_control_artifacts_are_supported() {
+        assert!(FIREBASE_RULE_TEST_PATHS.contains(&"app/test/firestore.rules.test.ts"));
+        assert!(DEPENDENCY_LOCK_PATHS.contains(&"app/package-lock.json"));
+        assert!(DEPENDENCY_LOCK_PATHS.contains(&"functions/package-lock.json"));
     }
 }

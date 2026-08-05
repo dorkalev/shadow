@@ -17,6 +17,11 @@ output "deploy_service_account" {
   description = "Set as repo variable GCP_DEPLOY_SA"
 }
 
+output "verify_service_account" {
+  value       = google_service_account.verify.email
+  description = "Set as repo variable GCP_VERIFY_SA"
+}
+
 output "artifact_repo" {
   value       = "${var.region}-docker.pkg.dev/${var.project_id}/${google_artifact_registry_repository.app.repository_id}"
   description = "Where CI pushes images"
