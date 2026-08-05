@@ -101,6 +101,6 @@ The interview protocol (issue format, state marker, answer parsing, idempotence,
 
 ## Design notes
 
-- **Why deterministic CI?** Earlier designs ran an LLM agent per PR. Every check it actually enforced is mechanically checkable, so this implementation keeps LLMs out of the merge path entirely: cheaper, faster, no API key in the hot path, and byte-for-byte reproducible verdicts. The LLM's judgment lives where it earns its keep — the daily runbook audit and the ritual interviews.
+- **Why deterministic CI?** Earlier designs ran an LLM agent per PR and per criterion. Mechanically checkable controls now live in `shadow-ci`: cheaper, faster, no API key in the hot path, and byte-for-byte reproducible verdicts. LLM judgment is manual and bounded to semantic deep review or ritual drafting.
 - **Scoring**: −10 per invalid ticket, −10 per unspecced file, −5 per untested file, −5 per missing reviewer, threshold 70 — stable across releases so historical gauges stay comparable.
 - **Unit-tested policy**: ticket extraction, traceability, test matching, severity classification, scoring, and bypass classification are pure functions with tests (`cargo test` in `shadow-ci/`).

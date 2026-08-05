@@ -37,9 +37,17 @@ pub struct Gauge {
 pub struct Model {
     pub org: String,
     pub gauge: Gauge,
+    pub readiness: Readiness,
     pub criteria: Vec<Crit>,
     pub procedures: Vec<Proc>,
     pub unknown_checks: i64,
+}
+
+pub struct Readiness {
+    pub design: f64,
+    pub technical: f64,
+    pub evidence: f64,
+    pub operating: f64,
 }
 
 pub struct CheckRow {
@@ -47,6 +55,9 @@ pub struct CheckRow {
     pub verdict: String,
     pub evidence: Option<String>,
     pub last_run: String,
+    pub dimension: String,
+    pub source: Option<String>,
+    pub expires_at: Option<String>,
 }
 
 pub struct Attestation {
@@ -185,6 +196,24 @@ fn category_chips(m: &Model) -> String {
             };
             let _ = write!(s, r#"<div class="chip"><span class="chip-name">{label}</span><span class="chip-score">{score:.0}%</span><span class="chip-n">{} of {} in scope</span></div>"#, scoped.len(), of_cat.len());
         }
+    }
+    s.push_str("</div>");
+    s
+}
+
+fn readiness_cards(r: &Readiness) -> String {
+    let items = [
+        ("Design readiness", r.design, "documented controls"),
+        ("Technical health", r.technical, "live automated checks"),
+        ("Evidence coverage", r.evidence, "criteria with current proof"),
+        ("Operating maturity", r.operating, "controls proven in operation"),
+    ];
+    let mut s = String::from(r#"<div class="readiness" aria-label="readiness dimensions">"#);
+    for (label, value, note) in items {
+        let _ = write!(
+            s,
+            r#"<div class="rmetric"><span class="rvalue">{value:.1}%</span><span class="rlabel">{label}</span><span class="rnote">{note}</span></div>"#
+        );
     }
     s.push_str("</div>");
     s
@@ -705,6 +734,11 @@ h1 .org{font-style:italic;font-weight:400;color:var(--faint)}
   text-transform:uppercase;background:rgba(246,241,228,.85);max-width:240px;text-align:center}
 .spark{width:220px;display:block;margin:10px auto 0;opacity:.9}
 .chips{display:flex;flex-direction:column;gap:0;border-top:1px solid var(--rule)}
+.readiness{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:18px}
+.rmetric{border:1px solid var(--rule);padding:11px 12px;background:rgba(33,28,20,.015)}
+.rvalue{display:block;font-family:"IBM Plex Mono",monospace;font-size:20px;color:var(--deep)}
+.rlabel{display:block;font-size:14px;font-weight:600;margin-top:3px}
+.rnote{display:block;font-family:"IBM Plex Mono",monospace;font-size:8.5px;line-height:1.4;color:var(--faint);letter-spacing:.06em;text-transform:uppercase;margin-top:3px}
 .chip{display:grid;grid-template-columns:1fr auto;grid-template-rows:auto auto;padding:12px 4px;border-bottom:1px solid var(--rule)}
 .chip-name{font-size:19px;font-weight:600}
 .chip-score{font-family:"IBM Plex Mono",monospace;font-size:19px;grid-row:span 2;align-self:center}
@@ -869,7 +903,10 @@ pub fn index(m: &Model) -> String {
         m.gauge.value,
         sparkline(&m.gauge.history)
     );
+    s.push_str("<div>");
+    s.push_str(&readiness_cards(&m.readiness));
     s.push_str(&category_chips(m));
+    s.push_str("</div>");
     s.push_str("</div></section>");
 
     // II + III
@@ -998,10 +1035,12 @@ pub fn detail(c: &Crit, checks: &[CheckRow], atts: &[Attestation]) -> String {
         let cls = match ch.verdict.as_str() { "pass" => "ok", "fail" => "bad", _ => "dim" };
         let glyph = match ch.verdict.as_str() { "pass" => "●", "fail" => "✕", _ => "?" };
         let ev = ch.evidence.as_deref().map(|e| format!(r#"<pre class="ev">{}</pre>"#, esc(e))).unwrap_or_default();
+        let source = ch.source.as_deref().map(|v| format!(" · source {}", esc(v))).unwrap_or_default();
+        let expiry = ch.expires_at.as_deref().map(|v| format!(" · expires {}", esc(v))).unwrap_or_default();
         let _ = write!(
             s,
-            r#"<tr><td class="glyph {cls}">{glyph}</td><td><strong>{}</strong> <span class="meta">{}</span>{ev}</td><td class="mono when">{}</td></tr>"#,
-            esc(&ch.name), esc(&ch.verdict), esc(&ch.last_run)
+            r#"<tr><td class="glyph {cls}">{glyph}</td><td><strong>{}</strong> <span class="meta">{} · {}{source}{expiry}</span>{ev}</td><td class="mono when">{}</td></tr>"#,
+            esc(&ch.name), esc(&ch.verdict), esc(&ch.dimension), esc(&ch.last_run)
         );
     }
     s.push_str("</table></section>");

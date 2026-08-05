@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://shadow.local/schemas/readiness-snapshot-v2.json",
+  "title": "Shadow readiness snapshot",
+  "type": "object",
+  "required": ["schema_version", "subject", "observed_at", "checks", "summary", "failures", "unknowns"],
+  "properties": {
+    "schema_version": { "const": 2 },
+    "subject": {
+      "type": "object",
+      "required": ["repository", "gcp_projects"],
+      "properties": {
+        "repository": { "type": "string", "pattern": "^[^/]+/[^/]+$" },
+        "gcp_projects": { "type": "array", "items": { "type": "string" }, "uniqueItems": true }
+      },
+      "additionalProperties": true
+    },
+    "observed_at": { "type": "string", "format": "date-time" },
+    "checks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "criteria", "dimension", "verdict", "evidence", "source", "observed_at", "expires_at"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "procedure_id": { "type": ["string", "null"] },
+          "criteria": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+          "dimension": { "enum": ["design", "technical", "evidence", "operating"] },
+          "verdict": { "enum": ["pass", "fail", "unknown", "n/a"] },
+          "evidence": { "type": "string" },
+          "source": { "type": "string" },
+          "observed_at": { "type": "string", "format": "date-time" },
+          "expires_at": { "type": ["string", "null"], "format": "date-time" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "summary": { "type": "object" },
+    "failures": { "type": "integer", "minimum": 0 },
+    "unknowns": { "type": "integer", "minimum": 0 }
+  },
+  "additionalProperties": false
+}

@@ -7,20 +7,22 @@
 #                                      N2: self-authorized PR (cites itself)→ gate must REJECT
 #                                      P:  properly ticketed PR             → gate must PASS,
 #                                          merge, archive record must appear
-#                                    then verify ALL criteria; failures open gh issues
-#   ./judgment.sh --skip-pipeline    criteria verification only
-#   ./judgment.sh --only CC6         filter criteria by prefix (tames the LLM bill)
+#                                    then build the deterministic readiness snapshot
+#   ./judgment.sh --skip-pipeline    snapshot only
+#   ./judgment.sh --deep-llm         additionally run the legacy per-criterion LLM review (costs money)
+#   ./judgment.sh --only CC6         filter the optional deep review by prefix
 #   ./judgment.sh --no-open          don't open the browser
 #
-# Needs: gh (authenticated), git, cargo, sqlite3, curl; claude CLI for the
-# criteria half. GCP checks use gcloud with whatever shadow/scope.json names.
+# Needs: gh (authenticated), git, cargo, sqlite3, curl. Claude is optional and
+# used only with --deep-llm. GCP checks use gcloud when scope.json names projects.
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 
-PIPELINE=1; ONLY=""; OPEN=1; PORT="${PORT:-8377}"
+PIPELINE=1; ONLY=""; OPEN=1; DEEP_LLM=0; PORT="${PORT:-8377}"
 while [ $# -gt 0 ]; do
   case "$1" in
     --skip-pipeline) PIPELINE=0 ;;
+    --deep-llm) DEEP_LLM=1 ;;
     --only) ONLY="$2"; shift ;;
     --no-open) OPEN=0 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
@@ -156,10 +158,11 @@ Recurring end-to-end proof of the change gates (#$ISSUE).
   git checkout -q staging && git pull -q
 fi
 
-# ---------- part II: every criterion, tested ----------
-step "part II — the criteria"
-command -v claude >/dev/null || { bad "the criteria half needs the claude CLI"; exit 1; }
+# ---------- part II: deterministic readiness snapshot ----------
+step "part II — deterministic readiness snapshot (zero model calls)"
+cargo build --release --manifest-path .shadow/ci/Cargo.toml >/dev/null 2>&1
 cargo build --release --manifest-path .shadow/site/Cargo.toml >/dev/null 2>&1
+SHADOW_CI=.shadow/ci/target/release/shadow-ci
 SHADOW=.shadow/site/target/release/shadow
 mkdir -p shadow
 DB="$(pwd)/shadow/judgment.db"; rm -f "$DB"
@@ -183,6 +186,36 @@ if [ -f shadow/scope.json ]; then
       UPDATE criteria SET in_scope=1 WHERE (id LIKE 'P1.%' OR id LIKE 'P2.%' OR id LIKE 'P3.%' OR id LIKE 'P4.%' OR id LIKE 'P5.%' OR id LIKE 'P6.%' OR id LIKE 'P7.%' OR id LIKE 'P8.%') AND $in_priv=1;"
   fi
 fi
+
+GCP_PROJECTS=$(jq -r '.gcp_projects // [] | join(",")' shadow/scope.json 2>/dev/null || echo "")
+set +e
+REPO="$REPO" SHADOW_ROOT="$(pwd)" GCP_PROJECTS="$GCP_PROJECTS" SHADOW_BRANCHES="main,staging" \
+  "$SHADOW_CI" verify
+VERIFY_EXIT=$?
+set -e
+"$SHADOW" import-verify --db "$DB" --report shadow/readiness-latest.json
+rm -rf shadow/dashboard
+SHADOW_ORG="$REPO" "$SHADOW" render --db "$DB" --out shadow/dashboard
+GAUGE=$(sqlite3 "$DB" "SELECT printf('%.1f', gauge) FROM gauge_history ORDER BY ts DESC LIMIT 1")
+FAILURES=$(jq -r '.failures' shadow/readiness-latest.json)
+UNKNOWNS=$(jq -r '.unknowns' shadow/readiness-latest.json)
+ok "snapshot complete — gauge ${GAUGE:-0.0}% · $FAILURES failing · $UNKNOWNS unknown · shadow/readiness-latest.json"
+if [ "$VERIFY_EXIT" -ne 0 ]; then
+  warn "readiness gaps are expected backlog, not a broken verifier; inspect shadow/dashboard/index.html"
+fi
+
+if [ "$DEEP_LLM" != 1 ]; then
+  if [ "$OPEN" = 1 ]; then
+    (command -v open >/dev/null && open "$(pwd)/shadow/dashboard/index.html") || \
+    (command -v xdg-open >/dev/null && xdg-open "$(pwd)/shadow/dashboard/index.html") || true
+  fi
+  log "deep semantic review skipped (default). Run ./judgment.sh --skip-pipeline --deep-llm only when you explicitly approve model spend."
+  exit 0
+fi
+
+# ---------- optional part III: legacy semantic deep review ----------
+step "part III — explicitly-authorized semantic review"
+command -v claude >/dev/null || { bad "--deep-llm requires the claude CLI"; exit 1; }
 
 # stop only OUR previous server via its pidfile — never pkill -f (which can
     # match unrelated processes whose argv contains the port)

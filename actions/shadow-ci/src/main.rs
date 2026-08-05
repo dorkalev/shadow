@@ -13,6 +13,7 @@
 mod archive;
 mod attest;
 mod check;
+mod control_attest;
 mod rituals;
 mod util;
 mod verify;
@@ -26,9 +27,10 @@ fn main() {
         "mgmt-packet" => rituals::run_mgmt_packet(),
         "release-record" => rituals::run_release_record(),
         "attest" => attest::run_attest(),
+        "control-attest" => control_attest::run_control_attest(),
         "verify" => verify::run_verify(),
         _ => {
-            eprintln!("usage: shadow-ci <check|archive|access-review|mgmt-packet|release-record|attest|verify>");
+            eprintln!("usage: shadow-ci <check|archive|access-review|mgmt-packet|release-record|attest|control-attest|verify>");
             eprintln!("  check    per-PR compliance audit   (env: REPO, PR_NUMBER, TICKET_PATTERN, REVIEW_PHASE,");
             eprintln!("           CONFIDENCE_THRESHOLD, REQUIRED_REVIEWERS, EXPECTED_REVIEWERS, TEST_EXCLUDE_PATHS, LINEAR_API_KEY)");
             eprintln!("  archive  post-merge evidence record (env: REPO, PR_NUMBER, TICKET_PATTERN, ARCHIVES_BRANCH,");
@@ -37,7 +39,8 @@ fn main() {
             eprintln!("  mgmt-packet     quarterly mgmt packet    (env: REPO, SHADOW_DB, ARCHIVES_PUSH)");
             eprintln!("  release-record  release evidence record  (env: TICKET_PATTERN, RELEASED_BY, ARCHIVES_PUSH)");
             eprintln!("  attest          CPA-style change attestation (env: REPO, SINCE, UNTIL, TICKET_PATTERN, ARCHIVES_PUSH)");
-            eprintln!("  verify          deterministic daily GitHub controls (env: REPO, SHADOW_BRANCHES)");
+            eprintln!("  control-attest  expiring human-control evidence (env: CRITERION_ID, ATTESTED_BY, ATTESTATION_NOTE, EXPIRES_AT)");
+            eprintln!("  verify          deterministic daily readiness snapshot (env: REPO, SHADOW_BRANCHES, GCP_PROJECTS, ARCHIVES_PUSH)");
             std::process::exit(2);
         }
     };

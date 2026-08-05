@@ -11,7 +11,7 @@ What that means precisely:
 
 **What Shadow is *not*:** it is not a certification, not an audit, and not a GRC platform of record. It does not issue SOC 2 reports — only a licensed CPA firm can, after evidence accrued over an examination period. Shadow makes you *ready* and keeps you honest between audits; a green gauge is self-assessed readiness, not a report. See the full disclaimer below.
 
-The corpus is the product: any capable LLM agent (Claude Code first) executes it against a codebase, a GitHub org, and a cloud account. MIT-licensed — see [LICENSE](LICENSE).
+The deterministic verifier and vendor-neutral evidence ledger are the product core. The corpus supplies the human/auditor context; an LLM is an optional adviser for bounded semantic work, never a scheduled source of truth. MIT-licensed — see [LICENSE](LICENSE).
 
 ## Map
 
@@ -23,9 +23,10 @@ The corpus is the product: any capable LLM agent (Claude Code first) executes it
 | [criteria/](criteria/) | One in-depth file per criterion (CC1.1 … P8.1): verbatim text, meaning, points of focus, what the auditor asks for, tiny-startup controls, automated shadow checks, evidence artifacts. |
 | [docs/what-is-soc2.md](docs/what-is-soc2.md) | SOC 2 meaning: attestation vs certification, Type I/II, report anatomy, description criteria, auditor lingo. |
 | [sdlc/SDLC.md](sdlc/SDLC.md) | The one simple SOC 2-compliant SDLC we dictate — ticket → branch → gated PR → archive → release, plus the clock rituals. |
-| [agent/](agent/) | Runbooks an LLM executes: **01** scan platform (read-only) → **02** install the SDLC → **03** periodic shadow audit (computes the gauge) → **04** daily proactive development loop. |
+| [agent/](agent/) | Optional judgment runbooks: scan/setup, deep semantic review, and developer assistance. The daily readiness reading comes from deterministic `shadow-ci verify`. |
 | [provision/](provision/) | The compliant runtime as annotated Terraform (GCP: Cloud Run + Firestore, always-free-tier eligible, zero keys and zero database secrets, keyless WIF deploys) — `/shadow:provision` applies it once, `deploy.yml` ships keylessly forever after. |
 | [actions/](actions/) | What adopting projects vendor: **shadow-ci** (Rust binary — deterministic per-PR compliance gates + post-merge evidence archive with bypass detection) and the three GitHub workflow templates. No Python, no LLM in the merge path. |
+| [docs/readiness-ledger.md](docs/readiness-ledger.md) | The zero-model daily evidence contract, four readiness measures, expiring human attestations, vendor-neutral export, and the honest path to 100. |
 | [commands/](commands/) | The developer workflow as Claude commands (capture → start → load → verify → finish → fix-compliance / fix-pr → release, hotfix as the emergency path) **plus the ritual interviews** — every traditionally-manual SOC 2 task (access reviews, management reviews, risk/vendor/policy refreshes, tabletop, on/offboarding, postmortems, system description, audit binder) reduced to gather → judgment-only dialogue → auto-filed evidence. |
 | [website/SPEC.md](website/SPEC.md) | The one-pager app: fixed 0–100% gauge + checklist, SQLite-backed, Rust single binary, ≤300 lines. |
 | [policies/README.md](policies/README.md) | The policy pack canon and lifecycle rules. |
@@ -47,14 +48,15 @@ CI-style unified log on stdout; the micro board self-refreshes so the greens lan
                                  # gate PASSES → merge → archive record appears. ~10 min, all inspectable.
 ```
 
-Genesis now ends with **judgment**: after proving the pipeline it verifies ALL criteria against the new repo (and, with `--gcp-project P --alert-email E`, terraform-applies the Firestore runtime first so the cloud criteria verify against real infrastructure). It also installs `judgment.sh` INTO the new repo:
+Genesis now ends with **judgment**: after proving the pipeline it builds a deterministic, zero-model readiness snapshot against the new repo (and, with `--gcp-project P --alert-email E`, terraform-applies the Firestore runtime first so cloud controls verify against real infrastructure). It also installs `judgment.sh` INTO the new repo:
 
 ```
 ./judgment.sh                    # from inside any shadow-installed repo, any time:
                                  # re-prove the route (ticket → commit → PR → gate rejects →
-                                 # fix → passes → merge → archive), then re-test every
-                                 # criterion; failures open gh issues; board goes live
-./judgment.sh --skip-pipeline    # criteria only
+                                 # fix → passes → merge → archive), then rebuild the
+                                 # evidence snapshot and dashboard with zero model calls
+./judgment.sh --skip-pipeline    # snapshot only
+./judgment.sh --skip-pipeline --deep-llm  # optional paid semantic review
 ```
 
 ```
