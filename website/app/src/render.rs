@@ -205,7 +205,7 @@ fn readiness_cards(r: &Readiness) -> String {
     let items = [
         ("Design readiness", r.design, "documented controls"),
         ("Technical health", r.technical, "live automated checks"),
-        ("Evidence coverage", r.evidence, "criteria with current proof"),
+        ("Observation coverage", r.evidence, "checks with a known verdict"),
         ("Operating maturity", r.operating, "controls proven in operation"),
     ];
     let mut s = String::from(r#"<div class="readiness" aria-label="readiness dimensions">"#);
@@ -288,7 +288,13 @@ const MAP: &[MapItem] = &[
         label: "Gates",
         note: "required checks — merging is impossible until all are green; the general controls over technology, deployed",
         crit: "CC8.1 · CC4.1 · CC5.1 · CC5.2",
-        pins: &["ci-tests", "review-bot", "compliance-audit-agent", "compliance-review-gate"],
+        pins: &["ci-tests", "compliance-audit-agent", "compliance-review-gate"],
+    },
+    MapItem::Station {
+        label: "Optional advisory review",
+        note: "off by default; a deliberately invoked model review may supplement the deterministic gates, but never satisfies one",
+        crit: "CC8.1 · CC7.1",
+        pins: &["review-bot"],
     },
     MapItem::Station {
         label: "Merge to main",

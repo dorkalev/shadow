@@ -40,6 +40,8 @@ CREATE TABLE IF NOT EXISTS gauge_history (
 CREATE TABLE IF NOT EXISTS readiness_history (
   ts TEXT PRIMARY KEY, design REAL NOT NULL, technical REAL NOT NULL,
   evidence REAL NOT NULL, operating REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS metadata (
+  key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS procedures (
   id TEXT PRIMARY KEY, name TEXT NOT NULL, category TEXT NOT NULL,
   criteria TEXT NOT NULL, install TEXT NOT NULL, detect TEXT NOT NULL,
@@ -149,7 +151,28 @@ struct VerifyReport {
     schema_version: u8,
     #[serde(default)]
     observed_at: String,
+    #[serde(default)]
+    subject: VerifySubject,
+    #[serde(default)]
+    summary: VerifySummary,
     checks: Vec<VerifyCheck>,
+}
+
+#[derive(Deserialize, Default)]
+struct VerifySubject {
+    #[serde(default)]
+    repository: String,
+}
+
+#[derive(Deserialize, Default)]
+struct VerifySummary {
+    #[serde(default)]
+    dimensions: HashMap<String, VerifyDimension>,
+}
+
+#[derive(Deserialize)]
+struct VerifyDimension {
+    percent: f64,
 }
 
 #[derive(Deserialize)]
@@ -237,6 +260,57 @@ fn readiness_metrics(conn: &Connection) -> (f64, f64, f64, f64) {
     (design, technical, evidence, operating)
 }
 
+fn report_readiness(
+    report: &VerifyReport,
+    fallback: (f64, f64, f64, f64),
+) -> (f64, f64, f64, f64) {
+    let dimension = |name: &str, default: f64| {
+        report
+            .summary
+            .dimensions
+            .get(name)
+            .map(|d| d.percent.clamp(0.0, 100.0))
+            .unwrap_or(default)
+    };
+    let observation_coverage = if report.checks.is_empty() {
+        fallback.2
+    } else {
+        report
+            .checks
+            .iter()
+            .filter(|check| check.verdict != "unknown")
+            .count() as f64
+            * 100.0
+            / report.checks.len() as f64
+    };
+    (
+        dimension("design", fallback.0),
+        dimension("technical", fallback.1),
+        observation_coverage,
+        dimension("operating", fallback.3),
+    )
+}
+
+fn readiness_gauge(readiness: (f64, f64, f64, f64)) -> f64 {
+    (readiness.0 + readiness.1 + readiness.2 + readiness.3) / 4.0
+}
+
+fn dashboard_subject(conn: &Connection) -> String {
+    std::env::var("SHADOW_ORG")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| {
+            conn.query_row(
+                "SELECT value FROM metadata WHERE key='subject_repository'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+        })
+        .unwrap_or_else(|| "unnamed subject".into())
+}
+
 fn import_verify(db_path: &str, report_path: &str) {
     let report: VerifyReport = serde_json::from_str(
         &std::fs::read_to_string(report_path).expect("read deterministic verify report"),
@@ -255,6 +329,14 @@ fn import_verify(db_path: &str, report_path: &str) {
     let mut evidence_by_criterion: HashMap<String, CriterionEvidence> = HashMap::new();
     let mut procedure_state: HashMap<String, (&str, u8)> = HashMap::new();
     let mut cap_reason = None;
+
+    if !report.subject.repository.is_empty() {
+        conn.execute(
+            "INSERT OR REPLACE INTO metadata (key, value) VALUES ('subject_repository', ?1)",
+            [&report.subject.repository],
+        )
+        .expect("record report subject");
+    }
 
     // A readiness report is a complete current snapshot. Clearing the render
     // cache prevents retired checks from surviving forever as ghost evidence.
@@ -324,26 +406,21 @@ fn import_verify(db_path: &str, report_path: &str) {
         )
         .expect("update procedure");
     }
-    let gauge: f64 = conn
-        .query_row(
-            "SELECT COALESCE(SUM(weight * credit) * 100.0 / NULLIF(SUM(weight), 0), 0) FROM criteria WHERE in_scope=1",
-            [],
-            |r| r.get(0),
-        )
-        .expect("compute gauge");
+    let readiness = report_readiness(&report, readiness_metrics(&conn));
+    let (design, technical, evidence, operating) = readiness;
+    let gauge = readiness_gauge(readiness);
     let cap = cap_reason.as_ref().map(|_| 79.0);
     conn.execute(
         "INSERT OR REPLACE INTO gauge_history (ts, gauge, cap, cap_reason) VALUES (?1,?2,?3,?4)",
         params![ts, gauge, cap, cap_reason],
     )
     .expect("record gauge");
-    let (design, technical, evidence, operating) = readiness_metrics(&conn);
     conn.execute(
         "INSERT OR REPLACE INTO readiness_history (ts, design, technical, evidence, operating) VALUES (?1,?2,?3,?4,?5)",
         params![ts, design, technical, evidence, operating],
     )
     .expect("record readiness dimensions");
-    println!("imported schema v{}: {check_count} checks; gauge {gauge:.1}%; design {design:.1}%; technical {technical:.1}%; evidence {evidence:.1}%; operating {operating:.1}%", report.schema_version);
+    println!("imported schema v{}: {check_count} checks; gauge {gauge:.1}%; design {design:.1}%; technical {technical:.1}%; observation coverage {evidence:.1}%; operating {operating:.1}%", report.schema_version);
 }
 
 // ---------- seeding: the markdown corpus is the source of truth ----------
@@ -843,6 +920,7 @@ async fn export_db(State(app): State<Arc<App>>, headers: HeaderMap) -> impl Into
 fn serve(db_path: String, port: u16) {
     let conn = Connection::open(&db_path).expect("open db");
     ensure_schema(&conn);
+    let org = dashboard_subject(&conn);
     let runner = match std::env::var("SHADOW_RUNNER") {
         Ok(cmd) if !cmd.is_empty() => Runner::Shell(cmd),
         _ => {
@@ -858,7 +936,7 @@ fn serve(db_path: String, port: u16) {
         db: Mutex::new(conn),
         db_path,
         token: std::env::var("SHADOW_TOKEN").ok(),
-        org: std::env::var("SHADOW_ORG").unwrap_or_else(|_| "unnamed org".into()),
+        org,
         running: Mutex::new(std::collections::HashSet::new()),
         runner,
         criteria_dir: std::env::var("SHADOW_CRITERIA_DIR").unwrap_or_else(|_| "../../criteria".into()),
@@ -886,7 +964,7 @@ fn serve(db_path: String, port: u16) {
 fn render_static(db_path: &str, out: &str) {
     let conn = Connection::open(db_path).expect("open db");
     ensure_schema(&conn);
-    let org = std::env::var("SHADOW_ORG").unwrap_or_else(|_| "unnamed org".into());
+    let org = dashboard_subject(&conn);
     let model = load_model(&conn, &org);
 
     std::fs::create_dir_all(format!("{out}/criteria")).expect("mkdir");
@@ -959,5 +1037,43 @@ mod tests {
         assert_eq!(status_for_evidence(&operating), ("verified", 1.0));
         let conflict = CriterionEvidence { pass_operating: true, failed: true, ..CriterionEvidence::default() };
         assert_eq!(status_for_evidence(&conflict), ("failing", 0.0));
+    }
+
+    #[test]
+    fn signed_dimension_summary_drives_the_gauge() {
+        let report: VerifyReport = serde_json::from_str(
+            r#"{
+              "summary":{"dimensions":{
+                "design":{"percent":100.0},
+                "technical":{"percent":90.0},
+                "operating":{"percent":100.0}
+              }},
+              "checks":[
+                {"id":"design-control","verdict":"pass"},
+                {"id":"technical-control","verdict":"fail"}
+              ]
+            }"#,
+        )
+        .unwrap();
+
+        let readiness = report_readiness(&report, (0.0, 0.0, 0.0, 0.0));
+        assert_eq!(readiness, (100.0, 90.0, 100.0, 100.0));
+        assert_eq!(readiness_gauge(readiness), 97.5);
+    }
+
+    #[test]
+    fn unknown_verdicts_reduce_observation_coverage() {
+        let report: VerifyReport = serde_json::from_str(
+            r#"{
+              "summary":{"dimensions":{}},
+              "checks":[
+                {"id":"observed","verdict":"pass"},
+                {"id":"blind-spot","verdict":"unknown"}
+              ]
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(report_readiness(&report, (1.0, 2.0, 3.0, 4.0)), (1.0, 2.0, 50.0, 4.0));
     }
 }

@@ -11,7 +11,7 @@
 
 ## Purpose
 
-One page. One number. A fixed gauge from 0 to 100% ("would you pass a SOC 2 examination today?") above the full 61-criterion auditor checklist **and the machinery section** — the agents, workflows, webhooks, scanners, and registers installed on the project, sourced from [`../procedures/PROCEDURES.md`](../procedures/PROCEDURES.md). The site **renders state; it never computes compliance** — Runbook 03 computes and writes; the site reads. This division keeps the site tiny and keeps the scoring logic in one auditable place (the runbook + criteria files).
+One page. One number. A fixed gauge from 0 to 100% ("how completely does the current signed readiness snapshot satisfy its declared design, technical, observation, and operating dimensions?") above the full 61-criterion auditor checklist **and the machinery section** — the agents, workflows, webhooks, scanners, and registers installed on the project, sourced from [`../procedures/PROCEDURES.md`](../procedures/PROCEDURES.md). The gauge is the arithmetic mean of the signed report's design, technical, and operating percentages plus observation coverage (the percentage of checks with a known verdict); `unknown` therefore lowers the score. The site imports and renders the deterministic verifier's signed summary; it does not independently reinterpret criterion credit as the official score.
 
 Everything renders on one sheet — no tabs, no view flips (they contradicted the one-pager paradigm and were removed):
 
@@ -107,7 +107,7 @@ Responsive: below 900px the sheet goes single-column (cards stack, header stacks
 4. **The Criteria** — the 61-cell checkbox matrix (see above), mirroring [CHECKLIST.md](../CHECKLIST.md) content via hover.
 5. **Footer** — last verify run time, count of `unknown` checks ("blind spots"), link to `/db`.
 
-Honest-rendering rules: a stale verify run (>48h) banners the whole page ("state is stale — monitor may be dead"); `unknown` never displays as pass; the gauge is always shown with its computation date, never as a timeless fact.
+Honest-rendering rules: a stale verify run (>48h) banners the whole page ("state is stale — monitor may be dead"); `unknown` never displays as pass and lowers observation coverage; the gauge is always shown with its computation date, never as a timeless fact. A perfect dashboard score means the declared machine-verifiable readiness checks all pass with no blind spots; it is not an auditor's opinion or a substitute for a Type II observation period.
 
 ## Seeding
 
