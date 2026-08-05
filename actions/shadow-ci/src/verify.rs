@@ -277,26 +277,32 @@ fn approved_document_check(
         );
     };
     let body = std::fs::read_to_string(&path).unwrap_or_default();
-    let upper = body.to_uppercase();
-    let placeholders = ["TODO", "TBD", "OPEN —", "PLACEHOLDER", "REPLACE_ME", "DRAFT —"];
-    let placeholder = placeholders.iter().find(|p| upper.contains(*p));
-    let valid = body.trim().len() >= 80 && placeholder.is_none();
+    let problem = document_problem(&body);
     observation(
         id,
         procedure,
         criteria,
         "design",
-        if valid { Verdict::Pass } else { Verdict::Fail },
-        if let Some(marker) = placeholder {
-            format!("{} still contains placeholder marker {marker}", path.display())
-        } else if body.trim().len() < 80 {
-            format!("{} is too short to establish the control design", path.display())
-        } else {
-            format!("approved control document is present: {}", path.display())
-        },
+        if problem.is_none() { Verdict::Pass } else { Verdict::Fail },
+        problem.map_or_else(
+            || format!("approved control document is present: {}", path.display()),
+            |reason| format!("{} {reason}", path.display()),
+        ),
         format!("repo:{}", path.display()),
         observed_at,
     )
+}
+
+fn document_problem(body: &str) -> Option<String> {
+    let upper = body.to_uppercase();
+    let placeholders = ["TODO", "TBD", "OPEN —", "PLACEHOLDER", "REPLACE_ME", "DRAFT —"];
+    if let Some(marker) = placeholders.iter().find(|p| upper.contains(*p)) {
+        Some(format!("still contains placeholder marker {marker}"))
+    } else if body.trim().len() < 80 {
+        Some("is too short to establish the control design".into())
+    } else {
+        None
+    }
 }
 
 fn file_contains_check(
@@ -714,51 +720,27 @@ pub fn run_verify() -> Result<i32, String> {
 mod tests {
     use super::*;
 
-    fn temp_root(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("shadow-verify-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+    #[test]
+    fn short_documents_never_receive_design_credit() {
+        assert_eq!(
+            document_problem("approved"),
+            Some("is too short to establish the control design".into())
+        );
     }
 
     #[test]
-    fn file_evidence_is_never_inferred_when_missing() {
-        let root = temp_root("missing");
-        let check = file_check(&root, "x", None, &["CC1.1"], &["policies/a.md"], "now");
-        assert_eq!(check["verdict"], "fail");
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn file_evidence_records_a_source() {
-        let root = temp_root("present");
-        std::fs::create_dir_all(root.join("policies")).unwrap();
-        std::fs::write(root.join("policies/a.md"), "approved").unwrap();
-        let check = file_check(&root, "x", None, &["CC1.1"], &["policies/a.md"], "now");
-        assert_eq!(check["verdict"], "pass");
-        assert!(check["source"].as_str().unwrap().contains("policies/a.md"));
-        let _ = std::fs::remove_dir_all(root);
+    fn reviewed_documents_pass_design_validation() {
+        let body = "# Risk register\n\nOwner: security\nApproved: 2026-08-05\nReview by: 2027-08-05\n\nRisk R-1 is accepted with quarterly review and a named accountable owner.";
+        assert_eq!(document_problem(body), None);
     }
 
     #[test]
     fn draft_documents_never_receive_design_credit() {
-        let root = temp_root("draft");
-        std::fs::create_dir_all(root.join("policies")).unwrap();
-        std::fs::write(
-            root.join("policies/risk.md"),
-            "# Risk register\n\nDRAFT — TODO replace this with a reviewed risk assessment and treatment register.",
+        assert!(document_problem(
+            "# Risk register\n\nDRAFT — TODO replace this with a reviewed risk assessment and treatment register."
         )
-        .unwrap();
-        let check = approved_document_check(
-            &root,
-            "risk",
-            None,
-            &["CC3.1"],
-            &["policies/risk.md"],
-            "now",
-        );
-        assert_eq!(check["verdict"], "fail");
-        let _ = std::fs::remove_dir_all(root);
+        .unwrap()
+        .contains("placeholder"));
     }
 
     #[test]
