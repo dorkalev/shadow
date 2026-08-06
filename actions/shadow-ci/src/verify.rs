@@ -728,11 +728,18 @@ fn summary(checks: &[Value]) -> Value {
     let mut dimensions: BTreeMap<String, (usize, usize, usize)> = BTreeMap::new();
     let mut evidenced = BTreeSet::new();
     let mut operating = BTreeSet::new();
+    let mut observations = BTreeMap::from([
+        ("pass", 0usize),
+        ("fail", 0usize),
+        ("unknown", 0usize),
+        ("not_applicable", 0usize),
+    ]);
     for check in checks {
         let dimension = check["dimension"].as_str().unwrap_or("unknown").to_string();
         let entry = dimensions.entry(dimension.clone()).or_default();
         match check["verdict"].as_str().unwrap_or("unknown") {
             "pass" => {
+                observations.entry("pass").and_modify(|count| *count += 1);
                 entry.0 += 1;
                 if let Some(criteria) = check["criteria"].as_array() {
                     for criterion in criteria.iter().filter_map(Value::as_str) {
@@ -743,9 +750,19 @@ fn summary(checks: &[Value]) -> Value {
                     }
                 }
             }
-            "fail" => entry.1 += 1,
-            "n/a" => {}
-            _ => entry.2 += 1,
+            "fail" => {
+                observations.entry("fail").and_modify(|count| *count += 1);
+                entry.1 += 1;
+            }
+            "n/a" => {
+                observations
+                    .entry("not_applicable")
+                    .and_modify(|count| *count += 1);
+            }
+            _ => {
+                observations.entry("unknown").and_modify(|count| *count += 1);
+                entry.2 += 1;
+            }
         }
     }
     let dimensions: BTreeMap<String, Value> = dimensions
@@ -763,8 +780,18 @@ fn summary(checks: &[Value]) -> Value {
             )
         })
         .collect();
+    let total = checks.len();
+    let not_applicable = observations["not_applicable"];
     json!({
         "dimensions": dimensions,
+        "observations": {
+            "total": total,
+            "applicable": total - not_applicable,
+            "pass": observations["pass"],
+            "fail": observations["fail"],
+            "unknown": observations["unknown"],
+            "not_applicable": not_applicable
+        },
         "criteria_with_evidence": evidenced.len(),
         "criteria_with_operating_evidence": operating.len()
     })
@@ -1238,9 +1265,24 @@ pub fn run_verify() -> Result<i32, String> {
     let unknowns = checks.iter().filter(|c| c["verdict"] == "unknown").count();
     let report_summary = summary(&checks);
     let report = json!({
-        "schema_version": 2,
+        "schema_version": 3,
         "subject": {"repository": repo, "gcp_projects": gcp_projects},
         "observed_at": observed_at,
+        "assurance": {
+            "basis": "automated-point-in-time",
+            "auditor_opinion": false,
+            "soc2_type_1": "not-determined",
+            "soc2_type_2": "not-determined",
+            "note": "Type II requires an elapsed CPA examination period and auditor-selected operating samples."
+        },
+        "provenance": {
+            "generator": "shadow-ci",
+            "repository": std::env::var("GITHUB_REPOSITORY").ok(),
+            "commit": std::env::var("GITHUB_SHA").ok(),
+            "run_id": std::env::var("GITHUB_RUN_ID").ok(),
+            "workflow": std::env::var("GITHUB_WORKFLOW").ok(),
+            "report_signature": "none"
+        },
         "checks": checks,
         "summary": report_summary,
         "failures": failures,
@@ -1329,6 +1371,10 @@ mod tests {
         let s = summary(&checks);
         assert_eq!(s["dimensions"]["design"]["percent"], 100.0);
         assert_eq!(s["dimensions"]["technical"]["percent"], 0.0);
+        assert_eq!(s["observations"]["total"], 2);
+        assert_eq!(s["observations"]["applicable"], 2);
+        assert_eq!(s["observations"]["pass"], 1);
+        assert_eq!(s["observations"]["fail"], 1);
     }
 
     #[test]

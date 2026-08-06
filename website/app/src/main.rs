@@ -155,6 +155,8 @@ struct VerifyReport {
     subject: VerifySubject,
     #[serde(default)]
     summary: VerifySummary,
+    #[serde(default)]
+    provenance: VerifyProvenance,
     checks: Vec<VerifyCheck>,
 }
 
@@ -162,6 +164,20 @@ struct VerifyReport {
 struct VerifySubject {
     #[serde(default)]
     repository: String,
+}
+
+#[derive(Deserialize, Default)]
+struct VerifyProvenance {
+    #[serde(default)]
+    commit: Option<String>,
+    #[serde(default)]
+    run_id: Option<String>,
+    #[serde(default)]
+    workflow: Option<String>,
+    #[serde(default)]
+    generator: Option<String>,
+    #[serde(default)]
+    report_signature: Option<String>,
 }
 
 #[derive(Deserialize, Default)]
@@ -260,6 +276,16 @@ fn readiness_metrics(conn: &Connection) -> (f64, f64, f64, f64) {
     (design, technical, evidence, operating)
 }
 
+fn criterion_maturity(conn: &Connection) -> f64 {
+    conn.query_row(
+        "SELECT COALESCE(SUM(weight * credit) * 100.0 / NULLIF(SUM(weight), 0), 0)
+         FROM criteria WHERE in_scope=1",
+        [],
+        |row| row.get(0),
+    )
+    .unwrap_or(0.0)
+}
+
 fn report_readiness(
     report: &VerifyReport,
     fallback: (f64, f64, f64, f64),
@@ -272,16 +298,21 @@ fn report_readiness(
             .map(|d| d.percent.clamp(0.0, 100.0))
             .unwrap_or(default)
     };
-    let observation_coverage = if report.checks.is_empty() {
+    let applicable = report
+        .checks
+        .iter()
+        .filter(|check| check.verdict != "n/a")
+        .count();
+    let observation_coverage = if applicable == 0 {
         fallback.2
     } else {
         report
             .checks
             .iter()
-            .filter(|check| check.verdict != "unknown")
+            .filter(|check| check.verdict == "pass" || check.verdict == "fail")
             .count() as f64
             * 100.0
-            / report.checks.len() as f64
+            / applicable as f64
     };
     (
         dimension("design", fallback.0),
@@ -289,10 +320,6 @@ fn report_readiness(
         observation_coverage,
         dimension("operating", fallback.3),
     )
-}
-
-fn readiness_gauge(readiness: (f64, f64, f64, f64)) -> f64 {
-    (readiness.0 + readiness.1 + readiness.2 + readiness.3) / 4.0
 }
 
 fn dashboard_subject(conn: &Connection) -> String {
@@ -328,14 +355,55 @@ fn import_verify(db_path: &str, report_path: &str) {
     let ts = if report.observed_at.is_empty() { fallback_ts } else { report.observed_at.clone() };
     let mut evidence_by_criterion: HashMap<String, CriterionEvidence> = HashMap::new();
     let mut procedure_state: HashMap<String, (&str, u8)> = HashMap::new();
-    let mut cap_reason = None;
-
     if !report.subject.repository.is_empty() {
         conn.execute(
             "INSERT OR REPLACE INTO metadata (key, value) VALUES ('subject_repository', ?1)",
             [&report.subject.repository],
         )
         .expect("record report subject");
+    }
+    let observation_count = |verdict: &str| {
+        report.checks.iter().filter(|check| check.verdict == verdict).count()
+    };
+    let pass = observation_count("pass");
+    let fail = observation_count("fail");
+    let unknown = observation_count("unknown");
+    let not_applicable = observation_count("n/a");
+    let metadata = [
+        ("observations_total", check_count.to_string()),
+        ("observations_pass", pass.to_string()),
+        ("observations_fail", fail.to_string()),
+        ("observations_unknown", unknown.to_string()),
+        ("observations_na", not_applicable.to_string()),
+        ("report_schema_version", report.schema_version.to_string()),
+        ("assurance_basis", "automated-point-in-time".into()),
+        ("soc2_type_1_status", "not-determined".into()),
+        ("soc2_type_2_status", "not-determined".into()),
+    ];
+    for (key, value) in metadata {
+        conn.execute(
+            "INSERT OR REPLACE INTO metadata (key, value) VALUES (?1, ?2)",
+            params![key, value],
+        )
+        .expect("record report metadata");
+    }
+    for (key, value) in [
+        ("report_commit", report.provenance.commit.as_deref()),
+        ("report_run_id", report.provenance.run_id.as_deref()),
+        ("report_workflow", report.provenance.workflow.as_deref()),
+        ("report_generator", report.provenance.generator.as_deref()),
+        ("report_signature", report.provenance.report_signature.as_deref()),
+    ] {
+        if let Some(value) = value.filter(|value| !value.trim().is_empty()) {
+            conn.execute(
+                "INSERT OR REPLACE INTO metadata (key, value) VALUES (?1, ?2)",
+                params![key, value],
+            )
+            .expect("record provenance metadata");
+        } else {
+            conn.execute("DELETE FROM metadata WHERE key=?1", [key])
+                .expect("clear absent provenance metadata");
+        }
     }
 
     // A readiness report is a complete current snapshot. Clearing the render
@@ -345,11 +413,6 @@ fn import_verify(db_path: &str, report_path: &str) {
         .expect("reset criterion cache");
 
     for check in &report.checks {
-        if (check.id == "github.org_2fa_required" || check.id.starts_with("github.branch_protection."))
-            && check.verdict == "fail"
-        {
-            cap_reason = Some(check.id.clone());
-        }
         let criteria = if check.criteria.is_empty() {
             criteria_for_legacy_verify_check(&check.id)
         } else {
@@ -408,11 +471,26 @@ fn import_verify(db_path: &str, report_path: &str) {
     }
     let readiness = report_readiness(&report, readiness_metrics(&conn));
     let (design, technical, evidence, operating) = readiness;
-    let gauge = readiness_gauge(readiness);
-    let cap = cap_reason.as_ref().map(|_| 79.0);
+    let gauge = criterion_maturity(&conn);
+    let metric_version = conn
+        .query_row(
+            "SELECT value FROM metadata WHERE key='gauge_metric_version'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .ok();
+    if metric_version.as_deref() != Some("criterion-maturity-v1") {
+        conn.execute("DELETE FROM gauge_history", [])
+            .expect("reset incompatible gauge history");
+    }
+    conn.execute(
+        "INSERT OR REPLACE INTO metadata (key, value) VALUES ('gauge_metric_version', 'criterion-maturity-v1')",
+        [],
+    )
+    .expect("record gauge metric version");
     conn.execute(
         "INSERT OR REPLACE INTO gauge_history (ts, gauge, cap, cap_reason) VALUES (?1,?2,?3,?4)",
-        params![ts, gauge, cap, cap_reason],
+        params![ts, gauge, Option::<f64>::None, Option::<String>::None],
     )
     .expect("record gauge");
     conn.execute(
@@ -420,7 +498,7 @@ fn import_verify(db_path: &str, report_path: &str) {
         params![ts, design, technical, evidence, operating],
     )
     .expect("record readiness dimensions");
-    println!("imported schema v{}: {check_count} checks; gauge {gauge:.1}%; design {design:.1}%; technical {technical:.1}%; observation coverage {evidence:.1}%; operating {operating:.1}%", report.schema_version);
+    println!("imported schema v{}: {check_count} observations ({pass} pass, {fail} fail, {unknown} unknown, {not_applicable} n/a); in-scope criterion maturity {gauge:.1}%", report.schema_version);
 }
 
 // ---------- seeding: the markdown corpus is the source of truth ----------
@@ -658,6 +736,21 @@ async fn ingest(
 
 // ---------- read model ----------
 
+fn metadata_value(conn: &Connection, key: &str) -> Option<String> {
+    conn.query_row(
+        "SELECT value FROM metadata WHERE key=?1",
+        [key],
+        |row| row.get::<_, String>(0),
+    )
+    .ok()
+}
+
+fn metadata_count(conn: &Connection, key: &str, fallback_sql: &str) -> i64 {
+    metadata_value(conn, key)
+        .and_then(|value| value.parse().ok())
+        .unwrap_or_else(|| conn.query_row(fallback_sql, [], |row| row.get(0)).unwrap_or(0))
+}
+
 fn load_model(conn: &Connection, org: &str) -> render::Model {
     let mut criteria = Vec::new();
     {
@@ -740,15 +833,7 @@ fn load_model(conn: &Connection, org: &str) -> render::Model {
             history.push(row.unwrap());
         }
     }
-    let computed = {
-        let scoped: Vec<&render::Crit> = criteria.iter().filter(|c| c.in_scope).collect();
-        let wsum: f64 = scoped.iter().map(|c| c.weight as f64).sum();
-        if wsum > 0.0 {
-            scoped.iter().map(|c| c.weight as f64 * c.credit).sum::<f64>() / wsum * 100.0
-        } else {
-            0.0
-        }
-    };
+    let computed = criterion_maturity(conn);
     let gauge = match latest {
         Some((ts, g, cap, reason, hours)) => render::Gauge {
             value: cap.map_or(g, |c| g.min(c)),
@@ -768,22 +853,40 @@ fn load_model(conn: &Connection, org: &str) -> render::Model {
         },
     };
 
-    let unknown_checks: i64 = conn
-        .query_row("SELECT COUNT(*) FROM checks WHERE verdict='unknown'", [], |r| r.get(0))
-        .unwrap_or(0);
+    let observations = render::ObservationSummary {
+        total: metadata_count(conn, "observations_total", "SELECT COUNT(DISTINCT name) FROM checks"),
+        pass: metadata_count(conn, "observations_pass", "SELECT COUNT(DISTINCT CASE WHEN verdict='pass' THEN name END) FROM checks"),
+        fail: metadata_count(conn, "observations_fail", "SELECT COUNT(DISTINCT CASE WHEN verdict='fail' THEN name END) FROM checks"),
+        unknown: metadata_count(conn, "observations_unknown", "SELECT COUNT(DISTINCT CASE WHEN verdict='unknown' THEN name END) FROM checks"),
+        not_applicable: metadata_count(conn, "observations_na", "SELECT COUNT(DISTINCT CASE WHEN verdict='n/a' THEN name END) FROM checks"),
+    };
+    let criterion_summary = render::CriterionSummary {
+        in_scope: criteria.iter().filter(|criterion| criterion.in_scope).count(),
+        verified: criteria.iter().filter(|criterion| criterion.in_scope && criterion.status == "verified").count(),
+        implemented: criteria.iter().filter(|criterion| criterion.in_scope && criterion.status == "implemented").count(),
+        failing: criteria.iter().filter(|criterion| criterion.in_scope && criterion.status == "failing").count(),
+        not_started: criteria.iter().filter(|criterion| criterion.in_scope && criterion.status == "not_started").count(),
+    };
+    let provenance = render::Provenance {
+        repository: metadata_value(conn, "subject_repository").unwrap_or_else(|| org.to_string()),
+        commit: metadata_value(conn, "report_commit"),
+        run_id: metadata_value(conn, "report_run_id"),
+        workflow: metadata_value(conn, "report_workflow"),
+        generator: metadata_value(conn, "report_generator"),
+        report_signature: metadata_value(conn, "report_signature"),
+    };
+    let unknown_checks = observations.unknown;
 
-    let readiness = conn
-        .query_row(
-            "SELECT design, technical, evidence, operating FROM readiness_history ORDER BY ts DESC LIMIT 1",
-            [],
-            |r| Ok(render::Readiness { design: r.get(0)?, technical: r.get(1)?, evidence: r.get(2)?, operating: r.get(3)? }),
-        )
-        .unwrap_or_else(|_| {
-            let (design, technical, evidence, operating) = readiness_metrics(conn);
-            render::Readiness { design, technical, evidence, operating }
-        });
-
-    render::Model { org: org.to_string(), gauge, readiness, criteria, procedures, unknown_checks }
+    render::Model {
+        org: org.to_string(),
+        gauge,
+        observations,
+        criterion_summary,
+        provenance,
+        criteria,
+        procedures,
+        unknown_checks,
+    }
 }
 
 // ---------- routes ----------
@@ -841,7 +944,7 @@ async fn run_criterion(State(app): State<Arc<App>>, Path(id): Path<String>) -> i
                 .status(),
             Runner::Claude => {
                 let prompt = format!(
-                    "You are the compliance shadow's single-criterion verifier. Criterion: {id}. Read {file} and execute each row of its 'Automated shadow checks' table (skip rows marked MANUAL) using gh / gcloud / file checks. Scope config: shadow/scope.json if present, else infer the org and repo from `gh repo view`. Then POST the results with curl to {url}/ingest as JSON: {{\"checks\":[{{\"criterion\":\"{id}\",\"name\":\"<check>\",\"verdict\":\"pass|fail|unknown\",\"evidence\":\"<trimmed output>\",\"last_run\":\"<utc now>\"}}],\"criteria\":[{{\"id\":\"{id}\",\"status\":\"verified|implemented|in_progress|failing\",\"credit\":1.0}}]}}. Credit rules: all checks pass and evidence fresh = verified/1.0; controls exist, evidence partial = implemented/0.6; some pass = in_progress/0.25; failures = failing/0.0. unknown is never treated as pass. Do NOT write a gauge entry (single-criterion runs must not move the official gauge). Be quick; no commentary."
+                    "You are the compliance shadow's single-criterion verifier. Criterion: {id}. Read {file} and execute each row of its 'Automated shadow checks' table (skip rows marked MANUAL) using gh / gcloud / file checks. Scope config: shadow/scope.json if present, else infer the org and repo from `gh repo view`. Then POST the results with curl to {url}/ingest as JSON: {{\"checks\":[{{\"criterion\":\"{id}\",\"name\":\"<check>\",\"verdict\":\"pass|fail|unknown\",\"evidence\":\"<trimmed output>\",\"last_run\":\"<utc now>\"}}],\"criteria\":[{{\"id\":\"{id}\",\"status\":\"verified|implemented|in_progress|failing\",\"credit\":1.0}}]}}. Credit rules: all checks pass and evidence fresh = verified/1.0; controls exist, evidence partial = implemented/0.6; some pass = in_progress/0.25; failures = failing/0.0. unknown is never treated as pass. Do NOT write a gauge entry (single-criterion runs must not move the full-snapshot maturity metric). Be quick; no commentary."
                 );
                 std::process::Command::new("claude")
                     .args(["-p", &prompt, "--allowedTools", "Bash,Read,Glob,Grep", "--max-turns", "40"])
@@ -1040,7 +1143,7 @@ mod tests {
     }
 
     #[test]
-    fn signed_dimension_summary_drives_the_gauge() {
+    fn report_dimensions_are_diagnostic_not_the_primary_gauge() {
         let report: VerifyReport = serde_json::from_str(
             r#"{
               "summary":{"dimensions":{
@@ -1058,7 +1161,22 @@ mod tests {
 
         let readiness = report_readiness(&report, (0.0, 0.0, 0.0, 0.0));
         assert_eq!(readiness, (100.0, 90.0, 100.0, 100.0));
-        assert_eq!(readiness_gauge(readiness), 97.5);
+    }
+
+    #[test]
+    fn primary_gauge_is_weighted_in_scope_criterion_maturity() {
+        let conn = Connection::open_in_memory().unwrap();
+        ensure_schema(&conn);
+        conn.execute(
+            "INSERT INTO criteria (id,family,category,text,weight,in_scope,status,credit) VALUES
+             ('CC1.1','CC1','security','one',3,1,'verified',1.0),
+             ('CC1.2','CC1','security','two',2,1,'implemented',0.6),
+             ('P1.1','P1','privacy','out',100,0,'verified',1.0)",
+            [],
+        )
+        .unwrap();
+
+        assert!((criterion_maturity(&conn) - 84.0).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -1075,5 +1193,21 @@ mod tests {
         .unwrap();
 
         assert_eq!(report_readiness(&report, (1.0, 2.0, 3.0, 4.0)), (1.0, 2.0, 50.0, 4.0));
+    }
+
+    #[test]
+    fn not_applicable_observations_are_excluded_from_coverage_denominator() {
+        let report: VerifyReport = serde_json::from_str(
+            r#"{
+              "summary":{"dimensions":{}},
+              "checks":[
+                {"id":"observed","verdict":"pass"},
+                {"id":"account-control","verdict":"n/a"}
+              ]
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(report_readiness(&report, (1.0, 2.0, 3.0, 4.0)), (1.0, 2.0, 100.0, 4.0));
     }
 }

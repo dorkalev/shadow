@@ -37,17 +37,37 @@ pub struct Gauge {
 pub struct Model {
     pub org: String,
     pub gauge: Gauge,
-    pub readiness: Readiness,
+    pub observations: ObservationSummary,
+    pub criterion_summary: CriterionSummary,
+    pub provenance: Provenance,
     pub criteria: Vec<Crit>,
     pub procedures: Vec<Proc>,
     pub unknown_checks: i64,
 }
 
-pub struct Readiness {
-    pub design: f64,
-    pub technical: f64,
-    pub evidence: f64,
-    pub operating: f64,
+pub struct ObservationSummary {
+    pub total: i64,
+    pub pass: i64,
+    pub fail: i64,
+    pub unknown: i64,
+    pub not_applicable: i64,
+}
+
+pub struct CriterionSummary {
+    pub in_scope: usize,
+    pub verified: usize,
+    pub implemented: usize,
+    pub failing: usize,
+    pub not_started: usize,
+}
+
+pub struct Provenance {
+    pub repository: String,
+    pub commit: Option<String>,
+    pub run_id: Option<String>,
+    pub workflow: Option<String>,
+    pub generator: Option<String>,
+    pub report_signature: Option<String>,
 }
 
 pub struct CheckRow {
@@ -126,7 +146,7 @@ fn arc(from: f64, to: f64, r: f64) -> String {
 
 fn gauge_svg(g: &Gauge) -> String {
     let mut s = String::new();
-    s.push_str(r#"<svg viewBox="0 0 400 232" class="dial" role="img" aria-label="compliance gauge">"#);
+    s.push_str(r#"<svg viewBox="0 0 400 232" class="dial" role="img" aria-label="weighted in-scope criterion maturity">"#);
     s.push_str(r##"<defs><pattern id="hatch" width="7" height="7" patternTransform="rotate(45)" patternUnits="userSpaceOnUse"><line x1="0" y1="0" x2="0" y2="7" stroke="#9e2b25" stroke-width="2.2"/></pattern></defs>"##);
     // colour bands
     for (a, b, c) in [
@@ -201,20 +221,49 @@ fn category_chips(m: &Model) -> String {
     s
 }
 
-fn readiness_cards(r: &Readiness) -> String {
+fn evidence_cards(m: &Model) -> String {
+    let applicable = m.observations.total - m.observations.not_applicable;
+    let observed = m.observations.pass + m.observations.fail;
     let items = [
-        ("Design readiness", r.design, "documented controls"),
-        ("Technical health", r.technical, "live automated checks"),
-        ("Observation coverage", r.evidence, "checks with a known verdict"),
-        ("Operating maturity", r.operating, "controls proven in operation"),
+        (
+            format!("{} / {}", m.criterion_summary.verified, m.criterion_summary.in_scope),
+            "Criteria verified",
+            "operating or technical evidence attached",
+        ),
+        (
+            m.criterion_summary.implemented.to_string(),
+            "Criteria implemented",
+            "design evidence only; not yet verified",
+        ),
+        (
+            format!("{} + {}", m.criterion_summary.not_started, m.criterion_summary.failing),
+            "Not started + failing",
+            "unresolved in-scope criterion states",
+        ),
+        (
+            format!("{} / {}", m.observations.pass, applicable.max(0)),
+            "Automated checks passed",
+            "applicable observations; not an audit sample",
+        ),
     ];
     let mut s = String::from(r#"<div class="readiness" aria-label="readiness dimensions">"#);
-    for (label, value, note) in items {
+    for (value, label, note) in items {
         let _ = write!(
             s,
-            r#"<div class="rmetric"><span class="rvalue">{value:.1}%</span><span class="rlabel">{label}</span><span class="rnote">{note}</span></div>"#
+            r#"<div class="rmetric"><span class="rvalue">{value}</span><span class="rlabel">{label}</span><span class="rnote">{note}</span></div>"#
         );
     }
+    let _ = write!(
+        s,
+        r#"<div class="observation-note">Observation denominator: {total} total = {applicable} applicable + {na} n/a. Applicable results: {pass} pass, {fail} fail, {unknown} unknown; {observed} have a pass/fail verdict.</div>"#,
+        total = m.observations.total,
+        applicable = applicable.max(0),
+        na = m.observations.not_applicable,
+        pass = m.observations.pass,
+        fail = m.observations.fail,
+        unknown = m.observations.unknown,
+        observed = observed,
+    );
     s.push_str("</div>");
     s
 }
@@ -725,6 +774,7 @@ h1 .org{font-style:italic;font-weight:400;color:var(--faint)}
 .banner{margin:18px 0 0;padding:10px 16px;border:1.5px solid var(--amber);color:#7a5a0c;background:rgba(176,125,16,.07);
   font-family:"IBM Plex Mono",monospace;font-size:12px;letter-spacing:.06em;text-transform:uppercase}
 .banner.dead{border-color:var(--red);color:var(--red);background:rgba(158,43,37,.06)}
+.banner.assurance{border-color:var(--ink);color:var(--ink);background:rgba(33,28,20,.035);text-transform:none;letter-spacing:.025em;line-height:1.55}
 .instrument{display:grid;grid-template-columns:minmax(320px,460px) 1fr;gap:44px;align-items:center;padding:36px 0 8px}
 .dialwrap{position:relative}
 .dial{width:100%;display:block}
@@ -733,6 +783,7 @@ h1 .org{font-style:italic;font-weight:400;color:var(--faint)}
 @keyframes sweep{from{transform:rotate(0deg)}}
 .reading{text-align:center;margin-top:-8px}
 .reading .big{font-size:60px;font-weight:600;letter-spacing:-.02em;font-variation-settings:"opsz" 72}
+.metric-name{font-family:"IBM Plex Mono",monospace;font-size:10px;color:var(--faint);letter-spacing:.1em;text-transform:uppercase;margin:-3px 0 6px}
 .reading .delta{font-family:"IBM Plex Mono",monospace;font-size:12px;color:var(--faint);letter-spacing:.08em}
 .reading .delta .up{color:var(--green)} .reading .delta .down{color:var(--red)}
 .stamp{position:absolute;top:8%;right:-2%;transform:rotate(-6deg);border:2.5px double var(--red);color:var(--red);
@@ -745,6 +796,11 @@ h1 .org{font-style:italic;font-weight:400;color:var(--faint)}
 .rvalue{display:block;font-family:"IBM Plex Mono",monospace;font-size:20px;color:var(--deep)}
 .rlabel{display:block;font-size:14px;font-weight:600;margin-top:3px}
 .rnote{display:block;font-family:"IBM Plex Mono",monospace;font-size:8.5px;line-height:1.4;color:var(--faint);letter-spacing:.06em;text-transform:uppercase;margin-top:3px}
+.observation-note{grid-column:1/-1;font-family:"IBM Plex Mono",monospace;font-size:9.5px;line-height:1.55;color:var(--faint);padding:2px 1px}
+.formula{border-top:1px solid var(--ink);margin-top:22px;padding-top:12px;font-family:"IBM Plex Mono",monospace;font-size:10.5px;line-height:1.65;color:var(--faint)}
+.provenance{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:7px 16px;margin-top:12px;padding:12px;border:1px solid var(--rule);font-family:"IBM Plex Mono",monospace;font-size:9.5px;line-height:1.5;color:var(--faint)}
+.provenance span{overflow-wrap:anywhere}.provenance strong{color:var(--ink);text-transform:uppercase;letter-spacing:.06em}.provenance a{color:var(--deep)}
+.integrity-note{font-family:"IBM Plex Mono",monospace;font-size:9px;line-height:1.5;color:var(--faint);margin-top:6px}
 .chip{display:grid;grid-template-columns:1fr auto;grid-template-rows:auto auto;padding:12px 4px;border-bottom:1px solid var(--rule)}
 .chip-name{font-size:19px;font-weight:600}
 .chip-score{font-family:"IBM Plex Mono",monospace;font-size:19px;grid-row:span 2;align-self:center}
@@ -837,6 +893,7 @@ a.back{font-family:"IBM Plex Mono",monospace;font-size:11px;letter-spacing:.14em
  .hd-right{text-align:left;line-height:1.8}
  h1{font-size:30px}
  .instrument{grid-template-columns:1fr;gap:26px;padding:24px 0 4px}
+ .provenance{grid-template-columns:1fr}
  .reading .big{font-size:46px}
  .cards{column-count:1}
  .st{flex-wrap:wrap}
@@ -862,7 +919,7 @@ fn head(title: &str) -> String {
 }
 
 pub fn index(m: &Model) -> String {
-    let mut s = head("Shadow Audit — SOC 2 readiness");
+    let mut s = head("Shadow Audit — control evidence maturity");
     s.push_str(r#"<div class="sheet">"#);
 
     // header
@@ -883,9 +940,10 @@ pub fn index(m: &Model) -> String {
         }
         _ => {}
     }
+    s.push_str(r#"<div class="banner assurance"><strong>Automated point-in-time assessment — not a SOC 2 report or CPA opinion.</strong> Type I and Type II status are not determined. Type II additionally requires an elapsed examination period and auditor-selected operating samples.</div>"#);
 
     // I. instrument
-    s.push_str(r#"<section class="sect"><h2><span class="roman">I.</span> The Instrument <span class="sect-note">would you pass an examination today?</span></h2><div class="instrument"><div class="dialwrap">"#);
+    s.push_str(r#"<section class="sect"><h2><span class="roman">I.</span> Evidence Maturity <span class="sect-note">internal control-evidence rubric · not probability of passing an audit</span></h2><div class="instrument"><div class="dialwrap">"#);
     s.push_str(&gauge_svg(&m.gauge));
     if let (Some(cap), Some(reason)) = (m.gauge.cap, m.gauge.cap_reason.as_deref()) {
         let _ = write!(s, r#"<div class="stamp">Capped {cap:.0}% — {}</div>"#, esc(reason));
@@ -905,15 +963,45 @@ pub fn index(m: &Model) -> String {
     };
     let _ = write!(
         s,
-        r#"<div class="reading"><div class="big">{:.1}%</div><div class="delta">{delta}</div>{}</div></div>"#,
+        r#"<div class="reading"><div class="big">{:.1}%</div><div class="metric-name">weighted in-scope criterion maturity</div><div class="delta">{delta}</div>{}</div></div>"#,
         m.gauge.value,
         sparkline(&m.gauge.history)
     );
     s.push_str("<div>");
-    s.push_str(&readiness_cards(&m.readiness));
+    s.push_str(&evidence_cards(m));
     s.push_str(&category_chips(m));
     s.push_str("</div>");
-    s.push_str("</div></section>");
+    s.push_str("</div>");
+    s.push_str(r#"<div class="formula"><strong>Formula:</strong> Σ(in-scope criterion weight × credit) ÷ Σ(in-scope criterion weight). Verified = 100% credit; implemented/design-only = 60%; failing or not started = 0%. A passing observation supports a criterion but does not by itself establish audit readiness.</div>"#);
+    let commit = m.provenance.commit.as_deref().unwrap_or("not recorded");
+    let run_id = m.provenance.run_id.as_deref().unwrap_or("not recorded");
+    let workflow = m.provenance.workflow.as_deref().unwrap_or("not recorded");
+    let generator = m.provenance.generator.as_deref().unwrap_or("shadow-ci");
+    let signature = m.provenance.report_signature.as_deref().unwrap_or("none");
+    let repo_url = format!("https://github.com/{}", m.provenance.repository);
+    let commit_value = if m.provenance.commit.is_some() {
+        let short_commit: String = commit.chars().take(12).collect();
+        format!(r#"<a href="{}/commit/{}">{}</a>"#, esc(&repo_url), esc(commit), esc(&short_commit))
+    } else {
+        esc(commit)
+    };
+    let run_value = if m.provenance.run_id.is_some() {
+        format!(r#"<a href="{}/actions/runs/{}">{}</a>"#, esc(&repo_url), esc(run_id), esc(run_id))
+    } else {
+        esc(run_id)
+    };
+    let _ = write!(
+        s,
+        r#"<div class="provenance"><span><strong>Subject</strong> <a href="{repo_url}">{repository}</a></span><span><strong>Commit</strong> {commit}</span><span><strong>Run</strong> {run}</span><span><strong>Workflow</strong> {workflow}</span><span><strong>Generator</strong> {generator}</span><span><strong>JSON signature</strong> {signature}</span></div><div class="integrity-note">The GitHub artifact may have a platform-provided SHA-256 digest. The JSON report itself is not cryptographically signed unless a signature is explicitly listed above.</div>"#,
+        repo_url = esc(&repo_url),
+        repository = esc(&m.provenance.repository),
+        commit = commit_value,
+        run = run_value,
+        workflow = esc(workflow),
+        generator = esc(generator),
+        signature = esc(signature),
+    );
+    s.push_str("</section>");
 
     // II + III
     s.push_str(&machinery_cards(m));
@@ -922,7 +1010,7 @@ pub fn index(m: &Model) -> String {
     // footer
     let _ = write!(
         s,
-        r#"<footer><span>{} unknown checks (blind spots)</span><span>state renders; the agent computes — <a href="/db">export shadow.db</a></span></footer>"#,
+        r#"<footer><span>{} unknown automated observations (blind spots)</span><span>evidence aid, not certification — <a href="/db">export shadow.db</a></span></footer>"#,
         m.unknown_checks
     );
     s.push_str("</div></body></html>");
@@ -942,7 +1030,7 @@ pub fn micro(m: &Model, running: &std::collections::HashSet<String>, runner_ok: 
     let _ = write!(
         s,
         r#"<header><div><div class="kicker">Compliance Shadow — Micro Board</div><h1>{:.1}% <span class="org">/ {}</span></h1></div>
-<div class="hd-right"><a href="/">full working papers →</a><br>click a box to run its checks now<br>the official gauge moves on the next full verify</div></header>"#,
+<div class="hd-right"><a href="/">full working papers →</a><br>weighted criterion maturity<br>not an audit opinion</div></header>"#,
         m.gauge.value,
         esc(&m.org)
     );
@@ -1173,5 +1261,52 @@ mod tests {
             })
             .collect();
         assert_eq!(defined, seen, "map pins must match PROCEDURES.md exactly");
+    }
+
+    #[test]
+    fn primary_page_never_presents_maturity_as_an_audit_opinion() {
+        let model = Model {
+            org: "example/repo".into(),
+            gauge: Gauge {
+                value: 61.2,
+                cap: None,
+                cap_reason: None,
+                ts: Some("2026-08-06T00:00:00Z".into()),
+                history: vec![61.2],
+                stale_hours: Some(0.0),
+            },
+            observations: ObservationSummary {
+                total: 40,
+                pass: 39,
+                fail: 0,
+                unknown: 0,
+                not_applicable: 1,
+            },
+            criterion_summary: CriterionSummary {
+                in_scope: 36,
+                verified: 14,
+                implemented: 14,
+                failing: 0,
+                not_started: 8,
+            },
+            provenance: Provenance {
+                repository: "example/repo".into(),
+                commit: Some("0123456789abcdef".into()),
+                run_id: Some("123".into()),
+                workflow: Some("verify".into()),
+                generator: Some("shadow-ci".into()),
+                report_signature: Some("none".into()),
+            },
+            criteria: vec![],
+            procedures: vec![],
+            unknown_checks: 0,
+        };
+
+        let html = index(&model);
+        assert!(html.contains("not a SOC 2 report or CPA opinion"));
+        assert!(html.contains("weighted in-scope criterion maturity"));
+        assert!(html.contains("39 / 39"));
+        assert!(html.contains("1 n/a"));
+        assert!(!html.contains("would you pass an examination today"));
     }
 }
