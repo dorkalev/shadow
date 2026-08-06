@@ -268,6 +268,92 @@ fn evidence_cards(m: &Model) -> String {
     s
 }
 
+fn gap_items(criteria: &[&Crit]) -> String {
+    if criteria.is_empty() {
+        return r#"<span class="gap-empty">none in this bucket</span>"#.into();
+    }
+    let mut s = String::from(r#"<div class="gap-items">"#);
+    for criterion in criteria {
+        let _ = write!(
+            s,
+            r#"<a class="gap-item" href="/criteria/{id}"><span class="gap-id">{id}</span><span>{label}</span></a>"#,
+            id = esc(&criterion.id),
+            label = esc(label_for(&criterion.id)),
+        );
+    }
+    s.push_str("</div>");
+    s
+}
+
+fn gap_ledger(m: &Model) -> String {
+    let mut build_or_fix = Vec::new();
+    let mut prove_operating = Vec::new();
+    let mut observe_over_time = Vec::new();
+    for criterion in m.criteria.iter().filter(|criterion| criterion.in_scope) {
+        match criterion.status.as_str() {
+            "verified" => observe_over_time.push(criterion),
+            "implemented" | "in_progress" => prove_operating.push(criterion),
+            _ => build_or_fix.push(criterion),
+        }
+    }
+    for bucket in [&mut build_or_fix, &mut prove_operating, &mut observe_over_time] {
+        bucket.sort_by(|a, b| a.id.cmp(&b.id));
+    }
+    let present_work = build_or_fix.len() + prove_operating.len();
+    let build_grammar = if build_or_fix.len() == 1 { "criterion needs" } else { "criteria need" };
+    let prove_grammar = if prove_operating.len() == 1 { "criterion has" } else { "criteria have" };
+    let prove_need = if prove_operating.len() == 1 { "needs" } else { "need" };
+    let mut s = String::new();
+    let _ = write!(
+        s,
+        r#"<section class="sect gaps" style="animation-delay:.1s"><h2><span class="roman">II.</span> The Gap <span class="sect-note">{present_work} need action now · {observing} at review-over-time stage</span></h2><div class="gap-summary"><strong>{present_work} of {total} in-scope criteria still need present-period work.</strong> {build} {build_grammar} a control built or fixed; {prove} {prove_grammar} design evidence but still {prove_need} proof of operation. The remaining {observing} have point-in-time evidence and can accumulate operating history.</div><div class="gap-grid">"#,
+        observing = observe_over_time.len(),
+        total = m.criterion_summary.in_scope,
+        build = build_or_fix.len(),
+        prove = prove_operating.len(),
+        build_grammar = build_grammar,
+        prove_grammar = prove_grammar,
+        prove_need = prove_need,
+    );
+    for (class, eyebrow, title, count, description, next, criteria) in [
+        (
+            "work",
+            "MORE WORK",
+            "Build or fix now",
+            build_or_fix.len(),
+            "The control is absent, incomplete, or failing. Implement or correct it before claiming evidence maturity.",
+            "make the control real, attach evidence, rerun",
+            build_or_fix.as_slice(),
+        ),
+        (
+            "prove",
+            "MORE WORK",
+            "Prove it operates",
+            prove_operating.len(),
+            "The design exists, but current evidence only establishes implementation. Execute the control and retain a dated result.",
+            "capture an operating sample",
+            prove_operating.as_slice(),
+        ),
+        (
+            "time",
+            "TIME / REVIEW",
+            "Review over time",
+            observe_over_time.len(),
+            "Point-in-time evidence exists. Keep the control operating and retain periodic samples through the auditor-agreed window.",
+            "maintain cadence; the CPA selects samples",
+            observe_over_time.as_slice(),
+        ),
+    ] {
+        let _ = write!(
+            s,
+            r#"<article class="gap-card {class}"><div class="gap-eyebrow">{eyebrow}</div><h3>{title}<span>{count} criteria</span></h3><p>{description}</p><div class="gap-next"><strong>Next:</strong> {next}</div>{items}</article>"#,
+            items = gap_items(criteria),
+        );
+    }
+    s.push_str(r#"</div><div class="period-gap"><strong>Type II time gap: not evaluated.</strong> Shadow can retain repeated evidence, but only a CPA-agreed examination start/end date and auditor testing can close the observation-period gap. A green automated check never starts or completes that clock.</div></section>"#);
+    s
+}
+
 // ---------- the workflow map: the SDLC as territory, procedures as pins ----------
 
 enum MapItem {
@@ -567,7 +653,7 @@ fn machinery_cards(m: &Model) -> String {
     let mut s = String::new();
     let _ = write!(
         s,
-        r#"<section class="sect" style="animation-delay:.15s"><h2><span class="roman">II.</span> The Machinery <span class="sect-note">the program as territory · {done} of {} procedures verified · hover anything</span></h2><div class="cards">"#,
+        r#"<section class="sect" style="animation-delay:.15s"><h2><span class="roman">III.</span> The Machinery <span class="sect-note">the program as territory · {done} of {} procedures verified · hover anything</span></h2><div class="cards">"#,
         m.procedures.len()
     );
 
@@ -713,7 +799,7 @@ fn criteria_matrix(m: &Model) -> String {
     let mut s = String::new();
     let _ = write!(
         s,
-        r#"<section class="sect" style="animation-delay:.3s"><h2><span class="roman">III.</span> The Criteria <span class="sect-note">TSP §100 · {in_scope} in scope · {verified} verified · {failing} failing · ⚙︎ technical / ¶ document-only — hover for the verbatim criterion</span></h2><div class="matrix">"#
+        r#"<section class="sect" style="animation-delay:.3s"><h2><span class="roman">IV.</span> The Criteria <span class="sect-note">TSP §100 · {in_scope} in scope · {verified} verified · {failing} failing · ⚙︎ technical / ¶ document-only — hover for the verbatim criterion</span></h2><div class="matrix">"#
     );
     for c in &crits {
         let cls = if !c.in_scope {
@@ -801,6 +887,16 @@ h1 .org{font-style:italic;font-weight:400;color:var(--faint)}
 .provenance{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:7px 16px;margin-top:12px;padding:12px;border:1px solid var(--rule);font-family:"IBM Plex Mono",monospace;font-size:9.5px;line-height:1.5;color:var(--faint)}
 .provenance span{overflow-wrap:anywhere}.provenance strong{color:var(--ink);text-transform:uppercase;letter-spacing:.06em}.provenance a{color:var(--deep)}
 .integrity-note{font-family:"IBM Plex Mono",monospace;font-size:9px;line-height:1.5;color:var(--faint);margin-top:6px}
+.gap-summary{font-size:16px;line-height:1.55;margin:18px 0 14px;max-width:900px}.gap-summary strong{color:var(--deep)}
+.gap-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}
+.gap-card{border:1px solid var(--rule);border-top:4px solid;padding:16px 16px 14px;background:rgba(33,28,20,.015)}
+.gap-card.work{border-top-color:var(--red)}.gap-card.prove{border-top-color:var(--amber)}.gap-card.time{border-top-color:var(--green)}
+.gap-eyebrow{font-family:"IBM Plex Mono",monospace;font-size:9px;letter-spacing:.16em;font-weight:600;color:var(--faint)}
+.gap-card h3{font-size:21px;margin:5px 0 8px}.gap-card h3 span{display:block;font-family:"IBM Plex Mono",monospace;font-size:10px;font-weight:400;color:var(--faint);margin-top:3px}
+.gap-card p{font-size:13.5px;line-height:1.55;min-height:84px}.gap-next{border-top:1px solid var(--rule);padding-top:8px;margin-top:9px;font-family:"IBM Plex Mono",monospace;font-size:9.5px;line-height:1.45;color:var(--faint)}
+.gap-items{display:flex;flex-wrap:wrap;gap:5px;margin-top:12px}.gap-item{display:inline-flex;gap:5px;border:1px solid var(--rule);padding:4px 6px;color:var(--ink);text-decoration:none;font-size:11px;line-height:1.2}.gap-item:hover{border-color:var(--ink);background:rgba(33,28,20,.03)}
+.gap-id{font-family:"IBM Plex Mono",monospace;font-size:9px;color:var(--faint)}.gap-empty{display:block;margin-top:12px;font-family:"IBM Plex Mono",monospace;font-size:9px;color:var(--faint)}
+.period-gap{margin-top:14px;padding:12px 14px;border:1px solid var(--ink);font-family:"IBM Plex Mono",monospace;font-size:10.5px;line-height:1.6;color:var(--faint)}.period-gap strong{color:var(--ink)}
 .chip{display:grid;grid-template-columns:1fr auto;grid-template-rows:auto auto;padding:12px 4px;border-bottom:1px solid var(--rule)}
 .chip-name{font-size:19px;font-weight:600}
 .chip-score{font-family:"IBM Plex Mono",monospace;font-size:19px;grid-row:span 2;align-self:center}
@@ -894,6 +990,7 @@ a.back{font-family:"IBM Plex Mono",monospace;font-size:11px;letter-spacing:.14em
  h1{font-size:30px}
  .instrument{grid-template-columns:1fr;gap:26px;padding:24px 0 4px}
  .provenance{grid-template-columns:1fr}
+ .gap-grid{grid-template-columns:1fr}.gap-card p{min-height:0}
  .reading .big{font-size:46px}
  .cards{column-count:1}
  .st{flex-wrap:wrap}
@@ -1003,7 +1100,8 @@ pub fn index(m: &Model) -> String {
     );
     s.push_str("</section>");
 
-    // II + III
+    // II + III + IV
+    s.push_str(&gap_ledger(m));
     s.push_str(&machinery_cards(m));
     s.push_str(&criteria_matrix(m));
 
@@ -1308,5 +1406,45 @@ mod tests {
         assert!(html.contains("39 / 39"));
         assert!(html.contains("1 n/a"));
         assert!(!html.contains("would you pass an examination today"));
+    }
+
+    #[test]
+    fn gap_ledger_partitions_every_in_scope_criterion_by_next_action() {
+        let criterion = |id: &str, status: &str, in_scope: bool| Crit {
+            id: id.into(),
+            family: "CC1".into(),
+            category: "security".into(),
+            text: "criterion".into(),
+            weight: 1,
+            in_scope,
+            status: status.into(),
+            credit: 0.0,
+            nature: "document".into(),
+            failing: vec![],
+        };
+        let model = Model {
+            org: "example/repo".into(),
+            gauge: Gauge { value: 0.0, cap: None, cap_reason: None, ts: None, history: vec![], stale_hours: None },
+            observations: ObservationSummary { total: 0, pass: 0, fail: 0, unknown: 0, not_applicable: 0 },
+            criterion_summary: CriterionSummary { in_scope: 4, verified: 1, implemented: 1, failing: 1, not_started: 1 },
+            provenance: Provenance { repository: "example/repo".into(), commit: None, run_id: None, workflow: None, generator: None, report_signature: None },
+            criteria: vec![
+                criterion("CC1.1", "not_started", true),
+                criterion("CC1.2", "failing", true),
+                criterion("CC1.3", "implemented", true),
+                criterion("CC1.4", "verified", true),
+                criterion("P1.1", "not_started", false),
+            ],
+            procedures: vec![],
+            unknown_checks: 0,
+        };
+
+        let html = gap_ledger(&model);
+        assert!(html.contains("3 of 4 in-scope criteria still need present-period work"));
+        assert!(html.contains("2 criteria need a control built or fixed"));
+        assert!(html.contains("1 criterion has design evidence but still needs proof of operation"));
+        assert!(html.contains("Type II time gap: not evaluated"));
+        assert_eq!(html.matches("class=\"gap-item\"").count(), 4);
+        assert!(!html.contains("P1.1"), "out-of-scope criteria must not appear as gaps");
     }
 }
