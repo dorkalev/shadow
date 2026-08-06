@@ -11,7 +11,9 @@
 
 ## Purpose
 
-One page. One number. A fixed gauge from 0 to 100% ("how completely does the current signed readiness snapshot satisfy its declared design, technical, observation, and operating dimensions?") above the full 61-criterion auditor checklist **and the machinery section** — the agents, workflows, webhooks, scanners, and registers installed on the project, sourced from [`../procedures/PROCEDURES.md`](../procedures/PROCEDURES.md). The gauge is the arithmetic mean of the signed report's design, technical, and operating percentages plus observation coverage (the percentage of checks with a known verdict); `unknown` therefore lowers the score. The site imports and renders the deterministic verifier's signed summary; it does not independently reinterpret criterion credit as the official score.
+One page with one primary internal metric above the full 61-criterion checklist **and the machinery section** — the agents, workflows, webhooks, scanners, and registers installed on the project, sourced from [`../procedures/PROCEDURES.md`](../procedures/PROCEDURES.md). The gauge is **weighted, in-scope criterion evidence maturity**: `Σ(weight × credit) / Σ(weight)`, where verified is 100% credit, implemented/design-only is 60%, and failing or not-started is 0%. It is not a probability of passing an examination.
+
+Automated observation results are rendered separately with an explicit denominator: pass, fail, unknown, and not-applicable. The page always says that it is an automated point-in-time assessment, not a SOC 2 report or CPA opinion; neither Type I nor Type II status is inferred. Type II requires an elapsed examination period and auditor-selected operating samples. Provenance names the repository, commit, workflow run, generator, and whether the JSON report itself has a cryptographic signature.
 
 Everything renders on one sheet — no tabs, no view flips (they contradicted the one-pager paradigm and were removed):
 
@@ -63,9 +65,9 @@ CREATE TABLE attestations (    -- manual evidence for organizational criteria
 
 CREATE TABLE gauge_history (   -- one row per verify run
   ts TEXT PRIMARY KEY,
-  gauge REAL NOT NULL,
-  cap REAL,                    -- 79.0 when a hard gate is tripped, else NULL
-  cap_reason TEXT
+  gauge REAL NOT NULL,         -- weighted in-scope criterion evidence maturity
+  cap REAL,                    -- retained for schema compatibility; currently NULL
+  cap_reason TEXT              -- retained for schema compatibility
 );
 
 CREATE TABLE procedures (      -- the machinery ledger, seeded from procedures/PROCEDURES.md
@@ -82,7 +84,7 @@ CREATE TABLE procedures (      -- the machinery ledger, seeded from procedures/P
 
 ## Micro board (`/micro`)
 
-The one-pager's dense sibling: one small box per criterion (ID + status glyph, status-colored, category headers, out-of-scope dimmed), the gauge in the corner. **Clicking a box runs that criterion's checks right now**: the click is a form POST (`/run/{id}`, zero JS) that spawns the verifier — the `claude` CLI if found on PATH (built-in single-criterion prompt: execute the criterion file's "Automated shadow checks" table, POST results to `/ingest`), or any command set in `SHADOW_RUNNER` (invoked via `sh -c` with `CRITERION`, `CRITERION_FILE`, `SHADOW_URL` env). While anything runs, boxes pulse ⟳ and the page polls via a meta-refresh. Two honesty rules: single-box runs never write a gauge entry (the official gauge moves only on the full verify), and with no verifier available the board renders read-only and says so. The site still never computes compliance — it triggers the agent that does.
+The one-pager's dense sibling: one small box per criterion (ID + status glyph, status-colored, category headers, out-of-scope dimmed), with weighted criterion maturity in the corner. **Clicking a box runs that criterion's checks right now**: the click is a form POST (`/run/{id}`, zero JS) that spawns the verifier — the `claude` CLI if found on PATH (built-in single-criterion prompt: execute the criterion file's "Automated shadow checks" table, POST results to `/ingest`), or any command set in `SHADOW_RUNNER` (invoked via `sh -c` with `CRITERION`, `CRITERION_FILE`, `SHADOW_URL` env). While anything runs, boxes pulse ⟳ and the page polls via a meta-refresh. Two honesty rules: single-box runs never write a gauge entry (the primary metric moves only on the full verify), and with no verifier available the board renders read-only and says so. The site never computes or claims compliance; it records evidence state.
 
 ## Routes
 
@@ -101,13 +103,13 @@ Responsive: below 900px the sheet goes single-column (cards stack, header stacks
 
 ## The page (top to bottom)
 
-1. **Gauge** — fixed semicircular arc, 0–100%, needle at current gauge. Color bands: 0–49 red, 50–79 amber, 80–94 green, 95–100 deep green. If a hard-gate cap is active, the arc beyond the cap renders hatched with the cap reason underneath ("capped at 79% — org 2FA not enforced"). Below the needle: the trend sparkline from `gauge_history`.
-2. **Category chips** — Security 33/33 in scope, Availability, Confidentiality, PI, Privacy — with per-category sub-scores; out-of-scope categories greyed with "not in scope".
+1. **Criterion maturity gauge** — fixed semicircular arc, 0–100%, needle at weighted in-scope evidence maturity. The formula and credits are printed beside it. Below the needle: the comparable trend from `gauge_history`; a metric-version migration discards incompatible legacy history.
+2. **Evidence summary and category chips** — verified/implemented/not-started/failing criterion counts; applicable automated pass/fail/unknown counts with n/a separated; Security, Availability, Confidentiality, PI, and Privacy weighted sub-scores; out-of-scope categories greyed with "not in scope".
 3. **The Machinery** — the ten territory cards (see above).
 4. **The Criteria** — the 61-cell checkbox matrix (see above), mirroring [CHECKLIST.md](../CHECKLIST.md) content via hover.
 5. **Footer** — last verify run time, count of `unknown` checks ("blind spots"), link to `/db`.
 
-Honest-rendering rules: a stale verify run (>48h) banners the whole page ("state is stale — monitor may be dead"); `unknown` never displays as pass and lowers observation coverage; the gauge is always shown with its computation date, never as a timeless fact. A perfect dashboard score means the declared machine-verifiable readiness checks all pass with no blind spots; it is not an auditor's opinion or a substitute for a Type II observation period.
+Honest-rendering rules: a stale verify run (>48h) banners the whole page ("state is stale — monitor may be dead"); `unknown` never displays as pass and not-applicable never inflates the applicable denominator; the gauge is always shown with its computation date, formula, and denominator. A perfect maturity score only means every in-scope criterion received full credit under this internal evidence rubric. It is never an auditor's opinion, a prediction of examination outcome, or a substitute for either a Type I CPA evaluation or a Type II observation period.
 
 ## Seeding
 
